@@ -1,5 +1,3 @@
-// FanManager.h
-
 #pragma once
 #include <Arduino.h>
 
@@ -9,7 +7,8 @@
 
 void updateDriverFans(void);
 
-// low level (PWM write)
+// ======================================================
+// LOW LEVEL PWM (ต้อง implement จริงใน MotorDriver.cpp)
+// ======================================================
 void setFanPWM_L(uint16_t pwm);
 void setFanPWM_R(uint16_t pwm);
-

@@ -11,9 +11,9 @@
 // SAFETY STATE
 // ============================================================================
 enum class SafetyState : uint8_t {
-  SAFE      = 0,
-  WARN      = 1,
-  LIMP      = 2,
+  SAFE = 0,
+  WARN = 1,
+  LIMP = 2,
   EMERGENCY = 3,
   _COUNT
 };
@@ -22,11 +22,11 @@ enum class SafetyState : uint8_t {
 // DRIVE EVENT
 // ============================================================================
 enum class DriveEvent : uint8_t {
-  NONE         = 0,
-  IMBALANCE    = 1,
-  STUCK_LEFT   = 2,
-  STUCK_RIGHT  = 3,
-  WHEEL_LOCK   = 4,
+  NONE = 0,
+  IMBALANCE = 1,
+  STUCK_LEFT = 2,
+  STUCK_RIGHT = 3,
+  WHEEL_LOCK = 4,
   AUTO_REVERSE = 5,
   _COUNT
 };
@@ -35,9 +35,9 @@ enum class DriveEvent : uint8_t {
 // SYSTEM STATE
 // ============================================================================
 enum class SystemState : uint8_t {
-  INIT   = 0,
+  INIT = 0,
   ACTIVE = 1,
-  FAULT  = 2,
+  FAULT = 2,
   _COUNT
 };
 
@@ -45,11 +45,11 @@ enum class SystemState : uint8_t {
 // DRIVE STATE
 // ============================================================================
 enum class DriveState : uint8_t {
-  IDLE      = 0,
-  RUN       = 1,
-  LIMP      = 2,
+  IDLE = 0,
+  RUN = 1,
+  LIMP = 2,
   SOFT_STOP = 3,
-  LOCKED    = 4,
+  LOCKED = 4,
   _COUNT
 };
 
@@ -57,10 +57,10 @@ enum class DriveState : uint8_t {
 // BLADE STATE
 // ============================================================================
 enum class BladeState : uint8_t {
-  IDLE      = 0,
-  RUN       = 1,
+  IDLE = 0,
+  RUN = 1,
   SOFT_STOP = 2,
-  LOCKED    = 3,
+  LOCKED = 3,
   _COUNT
 };
 
@@ -90,7 +90,7 @@ enum class FaultCode : uint8_t {
   BLADE_TIMEOUT,
 
   LOOP_OVERRUN,
-
+  LOW_VOLTAGE_CRITICAL,
   _COUNT
 };
 
@@ -122,12 +122,8 @@ enum class ACSCalState : uint8_t {
 // ENUM VALIDATION (GENERIC / SAFE)
 // ============================================================================
 template<typename E>
-inline bool isValidEnum(uint8_t raw)
-{
+inline bool isValidEnum(uint8_t raw) {
   return raw < static_cast<uint8_t>(E::_COUNT);
 }
 
 #endif
-
-
-

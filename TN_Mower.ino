@@ -38,6 +38,7 @@
 #include "FanManager.h"
 #include "VoltageManager.h"
 #include "ThermalManager.h"
+#include "DriveProtection.h"
 
 // ======================================================
 // FUNCTION PROTOTYPES
@@ -994,3 +995,5 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
+
+

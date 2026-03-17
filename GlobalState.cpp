@@ -9,8 +9,13 @@
 // ==================================================
 
 // ใช้กับ ISR → ต้อง volatile
-volatile DriveBuffer driveBufISR = {};
+volatile DriveBuffer driveBufISR = {0,0,0,0};
 
 // ใช้ใน main loop → ไม่ต้อง volatile
-DriveBuffer driveBufMain = {};
+DriveBuffer driveBufMain = {0,0,0,0};
 
+// ==================================================
+// GLOBAL VARIABLES (DEFINE HERE ONLY)
+// ==================================================
+
+float terrainDragAvg = 0.0f;

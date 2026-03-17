@@ -1,4 +1,6 @@
-// FaultManager.cpp
+// ============================================================================
+// FaultManager.cpp (FINAL - DEBOUNCE + PRIORITY + SAFE CLEAR + RECOVERY)
+// ============================================================================
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -10,117 +12,121 @@
 #include "SafetyManager.h"
 #include "CommsManager.h"
 
-void latchFault(FaultCode code) {
+// ======================================================
+// LOCAL: FAULT PRIORITY
+// ======================================================
+static uint8_t getFaultPriority(FaultCode code)
+{
+  switch (code)
+  {
+    case FaultCode::LOW_VOLTAGE_CRITICAL: return 1;
+    case FaultCode::IBUS_LOST:            return 2;
+    case FaultCode::DRIVE_TIMEOUT:        return 3;
+    case FaultCode::BLADE_TIMEOUT:        return 3;
+    case FaultCode::LOGIC_WATCHDOG:       return 5;
+    default: return 0;
+  }
+}
 
-  if (faultLatched)
+// ======================================================
+// LOCAL: DEBOUNCE STORAGE
+// ======================================================
+static uint32_t faultStartTime[10] = {0}; // รองรับ fault สูงสุด 10 code
+
+// ======================================================
+// FUNCTION: latchFault (มี debounce)
+// ======================================================
+void latchFault(FaultCode code)
+{
+  if (code == FaultCode::NONE)
     return;
+
+  uint8_t idx = (uint8_t)code;
+
+  // --------------------------------------------------
+  // DEBOUNCE (ต้องเกิดต่อเนื่องก่อน latch)
+  // --------------------------------------------------
+  if (faultStartTime[idx] == 0)
+  {
+    faultStartTime[idx] = millis();
+    return;
+  }
+
+  if (millis() - faultStartTime[idx] < 300) // 300ms debounce
+    return;
+
+  // --------------------------------------------------
+  // IGNORE SAME
+  // --------------------------------------------------
+  if (faultLatched && activeFault == code)
+    return;
+
+  // --------------------------------------------------
+  // PRIORITY
+  // --------------------------------------------------
+  if (faultLatched)
+  {
+    if (getFaultPriority(code) <= getFaultPriority(activeFault))
+      return;
+  }
 
   activeFault = code;
   faultLatched = true;
 
-  // --------------------------------------------------
-  // Queue EEPROM write (background task will handle)
-  // --------------------------------------------------
   faultToStore = code;
   faultWritePending = true;
 
 #if DEBUG_SERIAL
-  Serial.println(F("========== FAULT SNAPSHOT =========="));
-  Serial.print(F("FaultCode="));
+  Serial.print(F("[FAULT] LATCH: "));
   Serial.println((uint8_t)code);
-  Serial.print(F("SystemState="));
-  Serial.println((uint8_t)systemState);
-  Serial.print(F("DriveState="));
-  Serial.println((uint8_t)driveState);
-  Serial.print(F("BladeState="));
-  Serial.println((uint8_t)bladeState);
-  Serial.print(F("Safety="));
-  Serial.println((uint8_t)getDriveSafety());
-
-  Serial.print(F("CurA: "));
-  for (int i = 0; i < 4; i++) {
-    Serial.print(curA[i]);
-    Serial.print(F(" "));
-  }
-  Serial.println();
-
-  Serial.print(F("TempDriverL="));
-  Serial.print(tempDriverL);
-  Serial.print(F(" TempDriverR="));
-  Serial.println(tempDriverR);
-
-  Serial.print(F("PWM L/R="));
-  Serial.print(curL);
-  Serial.print(F("/"));
-  Serial.println(curR);
-  Serial.println(F("===================================="));
 #endif
 }
 
-
-
-
-
-void backgroundFaultEEPROMTask(uint32_t now) {
-
-  // --------------------------------------------------
-  // NOTHING TO DO
-  // --------------------------------------------------
+// ======================================================
+// EEPROM BACKGROUND TASK
+// ======================================================
+void backgroundFaultEEPROMTask(uint32_t now)
+{
   if (!faultWritePending)
     return;
 
-  if (faultToStore == FaultCode::NONE) {
+  if (faultToStore == FaultCode::NONE)
+  {
     faultWritePending = false;
     return;
   }
 
-  // --------------------------------------------------
-  // ANTI-WEAR LIMITS
-  // --------------------------------------------------
   if (faultWriteCount >= MAX_FAULT_WRITES_PER_BOOT)
     return;
 
   if (now - lastFaultWriteMs < FAULT_EEPROM_COOLDOWN_MS)
     return;
 
-  // --------------------------------------------------
-  // READ LAST STORED VALUE (SAFE RAW READ)
-  // --------------------------------------------------
   uint8_t raw;
   EEPROM.get(100, raw);
 
-  FaultCode lastStored;
+  FaultCode lastStored =
+    isValidEnum<FaultCode>(raw) ?
+    static_cast<FaultCode>(raw) :
+    FaultCode::NONE;
 
-  if (!isValidEnum<FaultCode>(raw)) {
-    // EEPROM corruption → treat as NONE
-    lastStored = FaultCode::NONE;
-  } else {
-    lastStored = static_cast<FaultCode>(raw);
-  }
-
-  // --------------------------------------------------
-  // VALIDATE CURRENT FAULT BEFORE WRITE
-  // --------------------------------------------------
   uint8_t newRaw = static_cast<uint8_t>(faultToStore);
 
-  if (!isValidEnum<FaultCode>(newRaw)) {
-    // Corrupted RAM value → do NOT write garbage
+  if (!isValidEnum<FaultCode>(newRaw))
+  {
     faultWritePending = false;
     return;
   }
 
-  // --------------------------------------------------
-  // WRITE ONLY IF CHANGED
-  // --------------------------------------------------
-  if (lastStored != faultToStore) {
-
+  if (lastStored != faultToStore)
+  {
     EEPROM.put(100, newRaw);
 
     faultWriteCount++;
     lastFaultWriteMs = now;
 
 #if DEBUG_SERIAL
-    Serial.print(F("[EEPROM] FAULT STORED: "));
+    Serial.print(F("[EEPROM] STORED: "));
     Serial.println(newRaw);
 #endif
   }
@@ -128,82 +134,66 @@ void backgroundFaultEEPROMTask(uint32_t now) {
   faultWritePending = false;
 }
 
-
-
-
+// ======================================================
+// WATCHDOG MONITOR (มี recovery)
+// ======================================================
 constexpr uint16_t WD_GRACE_MS = 40;
 
-void monitorSubsystemWatchdogs(uint32_t now) {
-
-  // --------------------------------------------------
-  // SENSOR WATCHDOG (I2C RECOVERY SAFE)
-  // --------------------------------------------------
-
-  if (i2cState == I2CRecoverState::IDLE) {
-
-    if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms + WD_GRACE_MS) {
-
-#if DEBUG_SERIAL
-      Serial.println(F("[WD] SENSOR TIMEOUT"));
-#endif
-
+void monitorSubsystemWatchdogs(uint32_t now)
+{
+  // SENSOR
+  if (i2cState == I2CRecoverState::IDLE)
+  {
+    if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms + WD_GRACE_MS)
+    {
       latchFault(FaultCode::LOGIC_WATCHDOG);
       wdSensor.faulted = true;
     }
-
-  } else {
-
-    // I2C recovery running
-    // pause sensor watchdog
+    else
+    {
+      wdSensor.faulted = false; // recover ได้
+    }
   }
 
-  // --------------------------------------------------
-  // COMMS WATCHDOG
-  // --------------------------------------------------
-
-  if (now - wdComms.lastUpdate_ms > wdComms.timeout_ms + WD_GRACE_MS) {
-
-#if DEBUG_SERIAL
-    Serial.println(F("[WD] COMMS TIMEOUT"));
-#endif
-
+  // COMMS
+  if (now - wdComms.lastUpdate_ms > wdComms.timeout_ms + WD_GRACE_MS)
+  {
     latchFault(FaultCode::IBUS_LOST);
     wdComms.faulted = true;
   }
+  else
+  {
+    wdComms.faulted = false;
+  }
 
-  // --------------------------------------------------
-  // DRIVE WATCHDOG
-  // --------------------------------------------------
-
-  if (now - wdDrive.lastUpdate_ms > wdDrive.timeout_ms + WD_GRACE_MS) {
-
-#if DEBUG_SERIAL
-    Serial.println(F("[WD] DRIVE TIMEOUT"));
-#endif
-
+  // DRIVE
+  if (now - wdDrive.lastUpdate_ms > wdDrive.timeout_ms + WD_GRACE_MS)
+  {
     latchFault(FaultCode::DRIVE_TIMEOUT);
     wdDrive.faulted = true;
   }
+  else
+  {
+    wdDrive.faulted = false;
+  }
 
-  // --------------------------------------------------
-  // BLADE WATCHDOG
-  // --------------------------------------------------
-
-  if (now - wdBlade.lastUpdate_ms > wdBlade.timeout_ms + WD_GRACE_MS) {
-
-#if DEBUG_SERIAL
-    Serial.println(F("[WD] BLADE TIMEOUT"));
-#endif
-
+  // BLADE
+  if (now - wdBlade.lastUpdate_ms > wdBlade.timeout_ms + WD_GRACE_MS)
+  {
     latchFault(FaultCode::BLADE_TIMEOUT);
     wdBlade.faulted = true;
   }
+  else
+  {
+    wdBlade.faulted = false;
+  }
 }
 
-
-
-
-void processFaultReset(uint32_t now) {
+// ======================================================
+// RESET VIA IGNITION
+// ======================================================
+void processFaultReset(uint32_t now)
+{
   static bool ignitionWasOn = false;
   static uint32_t ignitionOffStart_ms = 0;
   static bool ignitionOffQualified = false;
@@ -213,63 +203,27 @@ void processFaultReset(uint32_t now) {
 
   bool ignitionNow = ignitionActive;
 
-  // --------------------------------------------------
-  // DETECT IGNITION OFF PERIOD
-  // --------------------------------------------------
-  if (!ignitionNow) {
+  if (!ignitionNow)
+  {
     if (ignitionWasOn)
       ignitionOffStart_ms = now;
 
-    if (ignitionOffStart_ms != 0 && (now - ignitionOffStart_ms >= 3000)) {
+    if (ignitionOffStart_ms != 0 &&
+        (now - ignitionOffStart_ms >= 3000))
       ignitionOffQualified = true;
-    }
   }
 
-  // --------------------------------------------------
-  // SAFE CONDITIONS (USE RC CACHE)
-  // --------------------------------------------------
-  bool throttleNeutral = neutral(rcThrottle);
-  bool steerNeutral = neutral(rcSteer);
-  bool engineIdle = (rcEngine < 1100);
-
-  bool driveIdle =
-    (driveState == DriveState::IDLE || driveState == DriveState::LOCKED);
-
-  bool bladeSafe =
-    (bladeState == BladeState::IDLE || bladeState == BladeState::LOCKED);
-
-  bool currentSafe = true;
-  for (uint8_t i = 0; i < 4; i++)
-    if (curA[i] > CUR_WARN_A)
-      currentSafe = false;
-
-  bool tempSafe =
-    (tempDriverL < TEMP_WARN_C && tempDriverR < TEMP_WARN_C);
-
-  bool voltSafe = (engineVolt > V_WARN_LOW);
-
-  bool safetyClear =
-    (getDriveSafety() != SafetyState::EMERGENCY);
-
   bool allSafe =
-    throttleNeutral && steerNeutral && engineIdle && driveIdle && bladeSafe && currentSafe && tempSafe && voltSafe && safetyClear;
+    neutral(rcThrottle) &&
+    neutral(rcSteer) &&
+    (rcEngine < 1100) &&
+    (engineVolt > V_WARN_LOW);
 
-  // --------------------------------------------------
-  // EXECUTE RESET ON RISING EDGE OF IGNITION
-  // --------------------------------------------------
-  if (!ignitionWasOn && ignitionNow) {
-    if (ignitionOffQualified && allSafe) {
-#if DEBUG_SERIAL
-      Serial.println(F("[FAULT] RESET VIA IGNITION TOGGLE"));
-#endif
-
-      faultLatched = false;
-      activeFault = FaultCode::NONE;
-
-      systemState = SystemState::INIT;
-      driveState = DriveState::IDLE;
-      bladeState = BladeState::IDLE;
-      forceSafetyState(SafetyState::SAFE);
+  if (!ignitionWasOn && ignitionNow)
+  {
+    if (ignitionOffQualified && allSafe)
+    {
+      clearFault();
     }
 
     ignitionOffQualified = false;
@@ -279,5 +233,45 @@ void processFaultReset(uint32_t now) {
   ignitionWasOn = ignitionNow;
 }
 
+// ======================================================
+// CLEAR FAULT
+// ======================================================
+void clearFault()
+{
+  if (!faultLatched)
+    return;
 
+  if (getFaultPriority(activeFault) >= 4)
+    return;
 
+  faultLatched = false;
+  activeFault = FaultCode::NONE;
+
+  systemState = SystemState::INIT;
+  driveState  = DriveState::IDLE;
+  bladeState  = BladeState::IDLE;
+
+  forceSafetyState(SafetyState::SAFE);
+
+#if DEBUG_SERIAL
+  Serial.println(F("[FAULT] CLEARED"));
+#endif
+}
+
+// ======================================================
+// QUERY
+// ======================================================
+bool isFaultActive(void)
+{
+  return faultLatched;
+}
+
+FaultCode getActiveFault(void)
+{
+  return activeFault;
+}
+
+bool shouldStopSystem(void)
+{
+  return faultLatched;
+}

@@ -1,5 +1,5 @@
 // ========================================================================================
-// GlobalState.h  (TN MOWER GLOBAL STATE - FIXED + CLEAN)
+// GlobalState.h  (TN MOWER GLOBAL STATE - FIXED CLEAN)
 // ========================================================================================
 
 #pragma once
@@ -14,6 +14,13 @@
 #include <Adafruit_ADS1X15.h>
 
 #include "SystemTypes.h"
+
+// ======================================================
+// GLOBAL VARIABLES (DECLARE ONLY)
+// ======================================================
+
+// terrain drag estimator
+extern float terrainDragAvg;
 
 // ======================================================
 // DRIVER STATE ENUM
@@ -85,11 +92,7 @@ inline int16_t tempDriverR = 0;
 // ======================================================
 // CURRENT SENSOR OFFSET
 // ======================================================
-
-// offset ของตัว sensor (hardware offset)
 inline float g_acsOffsetV[4] = {2.5f,2.5f,2.5f,2.5f};
-
-// offset หลัง calibration (software offset)
 inline float currentOffset[4] = {0.0f,0.0f,0.0f,0.0f};
 
 inline uint8_t overCurCnt[4] = {0,0,0,0};
@@ -204,7 +207,6 @@ inline FaultCode faultToStore = FaultCode::NONE;
 // ======================================================
 // HELPER FUNCTIONS
 // ======================================================
-
 inline bool neutral(uint16_t v)
 {
   return (v > 1470 && v < 1530);
@@ -227,16 +229,13 @@ inline int16_t ramp(int16_t current,
   if (current < target)
   {
     current += step;
-    if (current > target)
-      current = target;
+    if (current > target) current = target;
   }
   else if (current > target)
   {
     current -= step;
-    if (current < target)
-      current = target;
+    if (current < target) current = target;
   }
-
   return current;
 }
 
@@ -246,4 +245,3 @@ inline int16_t ramp(int16_t current,
 inline Servo bladeServo;
 
 #endif
-
