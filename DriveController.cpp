@@ -16,6 +16,12 @@
 #include "Storm32Controller.h"
 #include "ThermalManager.h"
 
+// ==================================================
+// CURRENT LOOP STATE
+// ==================================================
+static float iErrL = 0;
+static float iErrR = 0;
+
 // AUTO REVERSE STATE
 uint32_t autoReverseStart_ms = 0;
 
@@ -216,6 +222,52 @@ void runDrive(uint32_t now) {
   }
 }
 
+void applyCurrentLoop(float &targetL, float &targetR) {
+  // --------------------------------------------------
+  // CONFIG
+  // --------------------------------------------------
+  constexpr float CUR_TARGET = 35.0f;  // กระแสเป้าหมาย
+  constexpr float KP = 0.8f;
+  constexpr float KI = 0.05f;
+
+  // --------------------------------------------------
+  // READ CURRENT
+  // --------------------------------------------------
+  float curL_now = curLeft();
+  float curR_now = curRight();
+
+  // --------------------------------------------------
+  // ERROR
+  // --------------------------------------------------
+  float errL = CUR_TARGET - curL_now;
+  float errR = CUR_TARGET - curR_now;
+
+  // --------------------------------------------------
+  // INTEGRATOR
+  // --------------------------------------------------
+  iErrL += errL;
+  iErrR += errR;
+
+  // anti windup
+  iErrL = constrain(iErrL, -200, 200);
+  iErrR = constrain(iErrR, -200, 200);
+
+  // --------------------------------------------------
+  // PI OUTPUT
+  // --------------------------------------------------
+  float outL = KP * errL + KI * iErrL;
+  float outR = KP * errR + KI * iErrR;
+
+  // --------------------------------------------------
+  // APPLY SCALE (ลด PWM เมื่อ current สูง)
+  // --------------------------------------------------
+  float scaleL = constrain(outL / CUR_TARGET, 0.3f, 1.0f);
+  float scaleR = constrain(outR / CUR_TARGET, 0.3f, 1.0f);
+
+  targetL *= scaleL;
+  targetR *= scaleR;
+}
+
 void applyDrive(uint32_t now) {
 
   // --------------------------------------------------
@@ -303,17 +355,35 @@ void applyDrive(uint32_t now) {
   }
 
   // ==================================================
-  // 🔴 THERMAL CONTROL (GLOBAL)
+  // 🔴 CURRENT LOOP  
   // ==================================================
-  float thermalScale = getThermalScale();
+  applyCurrentLoop(finalTargetL, finalTargetR);
+
+  // ==================================================
+  // POWER MANAGEMENT (FINAL SCALE)
+  // ==================================================
+  float scale = getPowerScale();
 
   if (isThermalEmergency()) {
     finalTargetL = 0;
     finalTargetR = 0;
   } else {
-    finalTargetL *= thermalScale;
-    finalTargetR *= thermalScale;
+    finalTargetL *= scale;
+    finalTargetR *= scale;
   }
+
+  // ==================================================
+  // 🔴 FEEDFORWARD LOAD ESTIMATE (ใส่ตรงนี้)
+  // ==================================================
+  float pwmLoad = (abs(finalTargetL) + abs(finalTargetR)) * 0.5f;
+
+  float ffScale = 1.0f;
+
+  if (pwmLoad > 600)
+    ffScale = 0.8f;
+
+  finalTargetL *= ffScale;
+  finalTargetR *= ffScale;
 
   // ==================================================
   // DRIVE LIMITS
@@ -482,8 +552,14 @@ void applyDriveLimits(float &finalTargetL,
   // 2️⃣ CURRENT LIMIT
   // ==================================================
 
-  if (curA_L > CUR_LIMP_A)
+  float curUseL = curA_L;
+  float curUseR = curA_R;
+
+  if (curUseL > CUR_LIMP_A)
     finalTargetL *= 0.5f;
+
+  if (curUseR > CUR_LIMP_A)
+    finalTargetR *= 0.5f;
 
   if (curA_R > CUR_LIMP_A)
     finalTargetR *= 0.5f;

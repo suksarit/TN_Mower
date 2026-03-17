@@ -1,9 +1,8 @@
 // ============================================================================
-// MotorDriver.cpp (FINAL FIXED - SAFE + DETERMINISTIC)
-// - PWM sync via Timer3 overflow (TOP)
-// - atomic write ป้องกันค่าเพี้ยน
-// - fan mapping ถูกต้อง
-// - ไม่มี delay block
+// MotorDriver.cpp (FINAL - MIDPOINT SYNC + CLEAN)
+// - PWM sync via Timer3
+// - ADC trigger = midpoint (ลด noise จริง)
+// - atomic write ปลอดภัย
 // ============================================================================
 
 #include <Arduino.h>
@@ -11,6 +10,7 @@
 #include "MotorDriver.h"
 #include "HardwareConfig.h"
 #include "GlobalState.h"
+#include "SensorManager.h"
 
 // ============================================================================
 // PWM CONSTANT
@@ -20,7 +20,7 @@
 #endif
 
 // ============================================================================
-// PWM BUFFER (WRITE FROM CONTROL LOOP)
+// PWM BUFFER
 // ============================================================================
 volatile uint16_t pwmL_req = 0;
 volatile uint16_t pwmR_req = 0;
@@ -33,6 +33,7 @@ volatile uint16_t fanPwmR_req = 0;
 // ============================================================================
 void setupPWM15K()
 {
+  // RESET
   TCCR3A = 0;
   TCCR3B = 0;
   TCCR4A = 0;
@@ -41,18 +42,28 @@ void setupPWM15K()
   OCR3A = 0;
   OCR4A = 0;
 
-  // TIMER3 → LEFT
+  // --------------------------------------------------
+  // TIMER3 → LEFT (MASTER)
+  // --------------------------------------------------
   TCCR3A = _BV(COM3A1) | _BV(WGM31);
   TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);
   ICR3 = PWM_TOP;
 
+  // 🔴 midpoint compare (สำคัญมาก)
+  OCR3B = PWM_TOP / 2;
+
+  // --------------------------------------------------
   // TIMER4 → RIGHT
+  // --------------------------------------------------
   TCCR4A = _BV(COM4A1) | _BV(WGM41);
   TCCR4B = _BV(WGM43) | _BV(WGM42) | _BV(CS40);
   ICR4 = PWM_TOP;
 
-  // ENABLE SYNC ISR
-  TIMSK3 |= (1 << TOIE3);
+  // --------------------------------------------------
+  // INTERRUPTS
+  // --------------------------------------------------
+  TIMSK3 |= (1 << TOIE3);   // PWM update
+  TIMSK3 |= (1 << OCIE3B);  // 🔴 ADC trigger (midpoint)
 }
 
 // ============================================================================
@@ -70,7 +81,7 @@ void setupFanPWM15K()
 }
 
 // ============================================================================
-// ATOMIC WRITE HELPERS (CRITICAL)
+// ATOMIC WRITE
 // ============================================================================
 inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
 {
@@ -81,7 +92,7 @@ inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
 }
 
 // ============================================================================
-// WRITE BUFFER (SAFE)
+// SET PWM
 // ============================================================================
 void setPWM_L(uint16_t v)
 {
@@ -108,7 +119,7 @@ void setFanPWM_R(uint16_t pwm)
 }
 
 // ============================================================================
-// PWM SYNC ISR (CORE)
+// 🔴 PWM APPLY (TOP)
 // ============================================================================
 ISR(TIMER3_OVF_vect)
 {
@@ -117,19 +128,19 @@ ISR(TIMER3_OVF_vect)
   uint16_t fl = fanPwmL_req;
   uint16_t fr = fanPwmR_req;
 
-  // clamp กันค่าหลุด
-  if (l  > PWM_TOP) l  = PWM_TOP;
-  if (r  > PWM_TOP) r  = PWM_TOP;
-  if (fl > PWM_TOP) fl = PWM_TOP;
-  if (fr > PWM_TOP) fr = PWM_TOP;
-
-  // apply sync
   OCR3A = l;
   OCR4A = r;
 
-  // ✅ FIX: mapping ถูกต้อง (L → B, R → C)
-  OCR5B = fl;
-  OCR5C = fr;
+  OCR5B = fr;
+  OCR5C = fl;
+}
+
+// ============================================================================
+// 🔴 ADC TRIGGER (MIDPOINT - CLEAN SIGNAL)
+// ============================================================================
+ISR(TIMER3_COMPB_vect)
+{
+  sensorAdcTrigger();   // ยิงตอน PWM นิ่งที่สุด
 }
 
 // ============================================================================
@@ -144,7 +155,6 @@ void driveSafe()
   atomicWrite16(fanPwmL_req, 0);
   atomicWrite16(fanPwmR_req, 0);
 
-  // apply ทันที
   OCR3A = 0;
   OCR4A = 0;
   OCR5B = 0;

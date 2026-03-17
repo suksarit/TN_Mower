@@ -1,8 +1,27 @@
-// ThermalManager.h
+// ============================================================================
+// ThermalManager.h (FINAL - POWER + FAN CENTRAL CONTROL)
+// ============================================================================
 
 #pragma once
 #include <Arduino.h>
 
-float getThermalScale(void);
-bool  isThermalEmergency(void);
-void  updateThermalManager(uint32_t now);
+// ======================================================
+// MAIN UPDATE (ต้องเรียกทุก loop)
+// ======================================================
+void updateThermalManager(uint32_t now);
+
+// ======================================================
+// POWER CONTROL (ใช้ใน DriveController)
+// ======================================================
+float getPowerScale(void);        // scale หลัก (thermal + current + voltage)
+bool  isThermalEmergency(void);   // emergency cut
+
+// ======================================================
+// OPTIONAL (debug / legacy)
+// ======================================================
+float getThermalScale(void);      // เผื่อ debug
+
+// ======================================================
+// FAN CONTROL (ใช้ใน FanManager)
+// ======================================================
+uint8_t getThermalFanLevel(void); // 0–255

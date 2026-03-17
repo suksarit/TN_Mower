@@ -17,5 +17,6 @@ bool readDriverTempsPT100(int &tL, int &tR);
 
 bool calibrateCurrentOffsetNonBlocking(uint32_t now);
 void idleCurrentAutoRezero(uint32_t now);
+void sensorAdcTrigger(void);
 
 
