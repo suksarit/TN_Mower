@@ -1,8 +1,8 @@
 // ============================================================================
-// MotorDriver.cpp (FINAL - MIDPOINT SYNC + CLEAN)
-// - PWM sync via Timer3
-// - ADC trigger = midpoint (ลด noise จริง)
-// - atomic write ปลอดภัย
+// MotorDriver.cpp (FINAL - FIXED PWM OWNERSHIP + SAFE ISR)
+// - PWM apply ONLY in ISR
+// - No direct OCR write outside ISR
+// - Emergency safe via request buffer
 // ============================================================================
 
 #include <Arduino.h>
@@ -20,7 +20,7 @@
 #endif
 
 // ============================================================================
-// PWM BUFFER
+// PWM BUFFER (ISR SOURCE OF TRUTH)
 // ============================================================================
 volatile uint16_t pwmL_req = 0;
 volatile uint16_t pwmR_req = 0;
@@ -33,14 +33,11 @@ volatile uint16_t fanPwmR_req = 0;
 // ============================================================================
 void setupPWM15K()
 {
-  // RESET
+  // RESET TIMER
   TCCR3A = 0;
   TCCR3B = 0;
   TCCR4A = 0;
   TCCR4B = 0;
-
-  OCR3A = 0;
-  OCR4A = 0;
 
   // --------------------------------------------------
   // TIMER3 → LEFT (MASTER)
@@ -49,7 +46,7 @@ void setupPWM15K()
   TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);
   ICR3 = PWM_TOP;
 
-  // 🔴 midpoint compare (สำคัญมาก)
+  // midpoint trigger (ADC sync)
   OCR3B = PWM_TOP / 2;
 
   // --------------------------------------------------
@@ -63,7 +60,7 @@ void setupPWM15K()
   // INTERRUPTS
   // --------------------------------------------------
   TIMSK3 |= (1 << TOIE3);   // PWM update
-  TIMSK3 |= (1 << OCIE3B);  // 🔴 ADC trigger (midpoint)
+  TIMSK3 |= (1 << OCIE3B);  // ADC midpoint trigger
 }
 
 // ============================================================================
@@ -81,7 +78,7 @@ void setupFanPWM15K()
 }
 
 // ============================================================================
-// ATOMIC WRITE
+// ATOMIC WRITE (SAFE 16-bit)
 // ============================================================================
 inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
 {
@@ -92,7 +89,7 @@ inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
 }
 
 // ============================================================================
-// SET PWM
+// SET PWM (REQUEST ONLY → ISR APPLY)
 // ============================================================================
 void setPWM_L(uint16_t v)
 {
@@ -119,7 +116,7 @@ void setFanPWM_R(uint16_t pwm)
 }
 
 // ============================================================================
-// 🔴 PWM APPLY (TOP)
+// 🔴 PWM APPLY (ONLY PLACE WRITING OCR)
 // ============================================================================
 ISR(TIMER3_OVF_vect)
 {
@@ -136,48 +133,47 @@ ISR(TIMER3_OVF_vect)
 }
 
 // ============================================================================
-// 🔴 ADC TRIGGER (MIDPOINT - CLEAN SIGNAL)
+// 🔴 ADC TRIGGER (MIDPOINT CLEAN)
 // ============================================================================
 ISR(TIMER3_COMPB_vect)
 {
-  sensorAdcTrigger();   // ยิงตอน PWM นิ่งที่สุด
+  sensorAdcTrigger();
 }
 
 // ============================================================================
-// DRIVE SAFE
+// DRIVE SAFE (EMERGENCY ONLY)
+// - ห้ามเขียน OCR ตรง
 // ============================================================================
 void driveSafe()
 {
+  // ปิด driver ก่อน (ตัดพลังจริง)
   digitalWrite(PIN_DRV_ENABLE, LOW);
 
+  // request = 0 → ISR จะ apply
   atomicWrite16(pwmL_req, 0);
   atomicWrite16(pwmR_req, 0);
   atomicWrite16(fanPwmL_req, 0);
   atomicWrite16(fanPwmR_req, 0);
 
-  OCR3A = 0;
-  OCR4A = 0;
-  OCR5B = 0;
-  OCR5C = 0;
-
+  // reset control state
   curL = 0;
   curR = 0;
   targetL = 0;
   targetR = 0;
 
+  // ปิด H-bridge กัน shoot-through
   HBRIDGE_ALL_OFF();
 }
 
 // ============================================================================
-// SHORT BRAKE
+// SHORT BRAKE (NO DIRECT PWM WRITE)
 // ============================================================================
 void motorShortBrake()
 {
   atomicWrite16(pwmL_req, 0);
   atomicWrite16(pwmR_req, 0);
 
-  OCR3A = 0;
-  OCR4A = 0;
-
   HBRIDGE_ALL_OFF();
 }
+
+

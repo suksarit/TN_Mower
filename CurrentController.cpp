@@ -9,6 +9,8 @@
 #include "GlobalState.h"
 #include "SensorManager.h"
 #include "CurrentController.h"
+#include "SensorManager.h"
+#include "HardwareConfig.h"
 
 // ==================================================
 // CURRENT LOOP STATE (LOCAL ONLY)
@@ -23,65 +25,57 @@ static float iErrR = 0.0f;
 
 void applyCurrentLoop(float &targetL, float &targetR)
 {
-  // --------------------------------------------------
-  // CONFIG
-  // --------------------------------------------------
-  constexpr float CUR_TARGET = 35.0f;   // กระแสเป้าหมาย (Amp)
-  constexpr float KP = 0.8f;
-  constexpr float KI = 0.05f;
+  // ==================================================
+  // TIME (dt จาก system)
+  // ==================================================
+  float dt = controlDt_s;   // ต้องมี global ตัวนี้ (วินาที)
 
-  constexpr float INTEGRATOR_LIMIT = 200.0f;
+  if (dt <= 0.0001f) return;
 
-  // --------------------------------------------------
-  // RESET INTEGRATOR (เมื่อไม่มีคำสั่ง)
-  // --------------------------------------------------
-  if (abs(targetL) < 1 && abs(targetR) < 1) {
-    iErrL = 0;
-    iErrR = 0;
-    return;
-  }
+  // ==================================================
+  // MEASURE CURRENT
+  // ==================================================
+  float measL = getMotorCurrentL();
+  float measR = getMotorCurrentR();
 
-  // --------------------------------------------------
-  // READ CURRENT
-  // --------------------------------------------------
-  float curL_now = curLeft();
-  float curR_now = curRight();
-
-  // --------------------------------------------------
+  // ==================================================
   // ERROR
-  // --------------------------------------------------
-  float errL = CUR_TARGET - curL_now;
-  float errR = CUR_TARGET - curR_now;
+  // ==================================================
+  float errL = targetL - measL;
+  float errR = targetR - measR;
 
-  // --------------------------------------------------
-  // INTEGRATOR
-  // --------------------------------------------------
-  iErrL += errL;
-  iErrR += errR;
+  // ==================================================
+  // INTEGRATOR (มี dt + anti-windup)
+  // ==================================================
+  static float iErrL = 0;
+  static float iErrR = 0;
 
-  // anti-windup
-  iErrL = constrain(iErrL, -INTEGRATOR_LIMIT, INTEGRATOR_LIMIT);
-  iErrR = constrain(iErrR, -INTEGRATOR_LIMIT, INTEGRATOR_LIMIT);
+  constexpr float I_LIMIT = PWM_TOP * 0.5f;
 
-  // --------------------------------------------------
-  // PI OUTPUT
-  // --------------------------------------------------
+  iErrL += errL * dt;
+  iErrR += errR * dt;
+
+  iErrL = constrain(iErrL, -I_LIMIT, I_LIMIT);
+  iErrR = constrain(iErrR, -I_LIMIT, I_LIMIT);
+
+  // ==================================================
+  // PI CONTROL
+  // ==================================================
+  constexpr float KP = 0.6f;
+  constexpr float KI = 1.2f;
+
   float outL = KP * errL + KI * iErrL;
   float outR = KP * errR + KI * iErrR;
 
-  // --------------------------------------------------
-  // CONVERT TO SCALE
-  // --------------------------------------------------
-  float scaleL = outL / CUR_TARGET;
-  float scaleR = outR / CUR_TARGET;
+  // ==================================================
+  // APPLY
+  // ==================================================
+  targetL += outL;
+  targetR += outR;
 
-  // clamp scale (สำคัญมาก)
-  scaleL = constrain(scaleL, 0.3f, 1.0f);
-  scaleR = constrain(scaleR, 0.3f, 1.0f);
-
-  // --------------------------------------------------
-  // APPLY SCALE
-  // --------------------------------------------------
-  targetL *= scaleL;
-  targetR *= scaleR;
+  // ==================================================
+  // FINAL CLAMP
+  // ==================================================
+  targetL = constrain(targetL, -PWM_TOP, PWM_TOP);
+  targetR = constrain(targetR, -PWM_TOP, PWM_TOP);
 }

@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp  
+// SensorManager.cpp  (FIXED - ADD CURRENT GETTERS + CHANNEL MAP)
 // ============================================================================
 
 #include <Arduino.h>
@@ -12,6 +12,12 @@
 #include "HardwareConfig.h"
 #include "FaultManager.h"
 #include "SystemTypes.h"
+
+// ======================================================
+// 🔴 CHANNEL MAP (ต้องตรงกับการต่อจริง)
+// ======================================================
+#define CUR_CH_LEFT   0
+#define CUR_CH_RIGHT  1
 
 // ======================================================
 // LOCAL STATE (FILE ONLY)
@@ -40,9 +46,6 @@ void sensorAdcTrigger()
 // ======================================================
 bool updateSensors()
 {
-  // ==================================================
-  // SYNC GATE
-  // ==================================================
   if (adcSyncCounter == 0)
     return false;
 
@@ -51,9 +54,6 @@ bool updateSensors()
   uint32_t now_ms = millis();
   uint32_t now_us = micros();
 
-  // ==================================================
-  // SENSOR GUARD
-  // ==================================================
   if (!adsCurPresent)
     return false;
 
@@ -122,7 +122,7 @@ bool updateSensors()
   float a = rawA - currentOffset[ch];
 
   // ==================================================
-  // 🔴 SPIKE REJECTION
+  // SPIKE REJECTION
   // ==================================================
   constexpr float MAX_DELTA = 25.0f;
 
@@ -132,7 +132,7 @@ bool updateSensors()
   }
 
   // ==================================================
-  // 🔴 PREDICTIVE (SMOOTH VERSION)
+  // PREDICTIVE
   // ==================================================
   float delta = a - curPrev[ch];
 
@@ -141,11 +141,9 @@ bool updateSensors()
 
   float pred = a + slopeLPF[ch] * 0.8f;
 
-  // clamp
   if (pred < 0) pred = 0;
   if (pred > CUR_MAX_PLAUSIBLE) pred = CUR_MAX_PLAUSIBLE;
 
-  // update prev AFTER predictive
   curPrev[ch] = a;
 
   // ==================================================
@@ -156,9 +154,6 @@ bool updateSensors()
     constexpr float alpha = 0.2f;
     curA[ch] += alpha * (a - curA[ch]);
 
-    // ==================================================
-    // 🔴 USE PREDICTIVE FOR PROTECTION
-    // ==================================================
     float curUse = max(a, pred);
 
     if (curUse > CUR_TRIP_A_CH[ch])
@@ -176,7 +171,7 @@ bool updateSensors()
   }
 
   // ==================================================
-  // NEXT CHANNEL + START NEXT CONVERSION
+  // NEXT CHANNEL
   // ==================================================
   ch++;
   if (ch >= 4) ch = 0;
@@ -195,6 +190,19 @@ bool updateSensors()
   wdSensor.lastUpdate_ms = now_ms;
 
   return true;
+}
+
+// ======================================================
+// 🔴 CURRENT GETTERS (FIX ERROR)
+// ======================================================
+float getMotorCurrentL(void)
+{
+  return curA[CUR_CH_LEFT];   // ใช้ค่าที่ผ่าน LPF แล้ว
+}
+
+float getMotorCurrentR(void)
+{
+  return curA[CUR_CH_RIGHT];
 }
 
 // ======================================================

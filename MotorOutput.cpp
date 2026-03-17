@@ -26,8 +26,7 @@
 // MAIN OUTPUT FUNCTION
 // ============================================================================
 
-void outputMotorPWM()
-{
+void outputMotorPWM() {
   enum MotorState {
     RUN,
     DEADTIME,
@@ -46,11 +45,7 @@ void outputMotorPWM()
 
   constexpr uint16_t DIR_DEADTIME_US = 1200;
   constexpr uint16_t PWM_RESUME_DELAY_US = 800;
-
-  constexpr int16_t PWM_RAMP_STEP = 8;
-  constexpr int16_t PWM_SNAP_WINDOW = 10;
-  constexpr int16_t PWM_PRECHARGE = 40;
-
+ 
   uint32_t now = micros();
 
   int8_t dirL = (curL > 0) ? 1 : (curL < 0 ? -1 : 0);
@@ -63,8 +58,7 @@ void outputMotorPWM()
   // LEFT MOTOR
   // ==================================================
 
-  switch (stateL)
-  {
+  switch (stateL) {
     case RUN:
 
       if (dirL != lastDirL) {
@@ -80,23 +74,14 @@ void outputMotorPWM()
       }
 
       {
-        int16_t diff = targetL - pwmOutL;
-
-        if (pwmOutL == 0 && targetL > PWM_PRECHARGE)
-          pwmOutL = PWM_PRECHARGE;
-
-        else if (abs(diff) <= PWM_SNAP_WINDOW)
+        {
+          // ใช้ค่าจาก DriveRamp โดยตรง (ห้าม ramp ซ้ำ)
           pwmOutL = targetL;
 
-        else if (diff > 0)
-          pwmOutL += PWM_RAMP_STEP;
+          pwmOutL = constrain(pwmOutL, 0, PWM_TOP);
 
-        else
-          pwmOutL -= PWM_RAMP_STEP;
-
-        pwmOutL = constrain(pwmOutL, 0, PWM_TOP);
-
-        setPWM_L(pwmOutL);
+          setPWM_L(pwmOutL);
+        }
       }
 
       break;
@@ -139,8 +124,7 @@ void outputMotorPWM()
   // RIGHT MOTOR
   // ==================================================
 
-  switch (stateR)
-  {
+  switch (stateR) {
     case RUN:
 
       if (dirR != lastDirR) {
@@ -156,58 +140,49 @@ void outputMotorPWM()
       }
 
       {
-        int16_t diff = targetR - pwmOutR;
-
-        if (pwmOutR == 0 && targetR > PWM_PRECHARGE)
-          pwmOutR = PWM_PRECHARGE;
-
-        else if (abs(diff) <= PWM_SNAP_WINDOW)
+        {
+          // ใช้ค่าจาก DriveRamp โดยตรง
           pwmOutR = targetR;
 
-        else if (diff > 0)
-          pwmOutR += PWM_RAMP_STEP;
+          pwmOutR = constrain(pwmOutR, 0, PWM_TOP);
 
-        else
-          pwmOutR -= PWM_RAMP_STEP;
+          setPWM_R(pwmOutR);
+        }
 
-        pwmOutR = constrain(pwmOutR, 0, PWM_TOP);
+        break;
 
-        setPWM_R(pwmOutR);
+        case DEADTIME:
+
+          setPWM_R(0);
+
+          if (now - timerR >= DIR_DEADTIME_US)
+            stateR = SET_DIR;
+
+          break;
+
+        case SET_DIR:
+
+          setPWM_R(0);
+
+          if (dirR > 0) HBRIDGE_R_FWD();
+          else if (dirR < 0) HBRIDGE_R_REV();
+          else HBRIDGE_R_OFF();
+
+          timerR = now;
+          lastDirR = dirR;
+
+          stateR = PWM_DELAY;
+
+          break;
+
+        case PWM_DELAY:
+
+          setPWM_R(0);
+
+          if (now - timerR >= PWM_RESUME_DELAY_US)
+            stateR = RUN;
+
+          break;
       }
-
-      break;
-
-    case DEADTIME:
-
-      setPWM_R(0);
-
-      if (now - timerR >= DIR_DEADTIME_US)
-        stateR = SET_DIR;
-
-      break;
-
-    case SET_DIR:
-
-      setPWM_R(0);
-
-      if (dirR > 0) HBRIDGE_R_FWD();
-      else if (dirR < 0) HBRIDGE_R_REV();
-      else HBRIDGE_R_OFF();
-
-      timerR = now;
-      lastDirR = dirR;
-
-      stateR = PWM_DELAY;
-
-      break;
-
-    case PWM_DELAY:
-
-      setPWM_R(0);
-
-      if (now - timerR >= PWM_RESUME_DELAY_US)
-        stateR = RUN;
-
-      break;
   }
-}
+  }

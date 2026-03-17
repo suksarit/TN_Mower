@@ -322,12 +322,14 @@ void handleFaultImmediateCut() {
   // --------------------------------------------------
   // 2) CUT DRIVE OUTPUT
   // --------------------------------------------------
-  driveSafe();
   curL = 0;
   curR = 0;
   targetL = 0;
   targetR = 0;
 
+  // ใช้ driveSafe เฉพาะ kill จริง
+  driveSafe();
+  
   // --------------------------------------------------
   // 3) CUT BLADE THROTTLE
   // --------------------------------------------------
@@ -695,7 +697,20 @@ void taskBackground(uint32_t now) {
   backgroundFaultEEPROMTask(now);
 }
 
-void runControlLoop(uint32_t now, uint32_t loopStart_us) {
+void runControlLoop(uint32_t now, uint32_t loopStart_us)
+{
+  // ==================================================
+  // 🔴 CREATE dt (FIX ERROR + ใช้งานจริง)
+  // ==================================================
+  static uint32_t lastNow = 0;
+
+  uint32_t dt_ms = now - lastNow;
+  lastNow = now;
+
+  if (dt_ms == 0) dt_ms = 1;   // กันหาร 0
+
+  controlDt_s = dt_ms / 1000.0f;
+
   // ==================================================
   // STAGE 1: UPDATE TARGET FROM RC
   // ==================================================
@@ -709,6 +724,10 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   // ==================================================
   runDrive(now);
   applyDrive(now);
+
+  // 🔴 FIX 3: feed watchdog
+  wdDrive.lastUpdate_ms = now;
+
   driveBufISR.curL = curL;
   driveBufISR.curR = curR;
 }
@@ -995,5 +1014,3 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
-
-

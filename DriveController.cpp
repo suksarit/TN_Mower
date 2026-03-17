@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveController.cpp (CLEAN VERSION)
+// DriveController.cpp (FINAL - FIXED LOAD COMP + CLEAN ARBITRATION + CORRECT FLOW)
 // ============================================================================
 
 #include <Arduino.h>
@@ -13,59 +13,39 @@
 #include "SystemTypes.h"
 #include "HardwareConfig.h"
 
-// ======================================================
-// MODULES (เฉพาะที่ใช้จริง)
-// ======================================================
 #include "DriveController.h"
 #include "MotorDriver.h"
 #include "SafetyManager.h"
 #include "ThermalManager.h"
-
 #include "AutoReverse.h"
 #include "DriveProtection.h"
 #include "CurrentController.h"
 #include "DriveRamp.h"
+#include "SensorManager.h"
 
 // ============================================================================
 // MAIN DRIVE PIPELINE
 // ============================================================================
 
-void applyDrive(uint32_t now)
-{
+void applyDrive(uint32_t now) {
+
   // --------------------------------------------------
-  // DRIVER NOT ACTIVE
+  // DRIVER NOT ACTIVE (SETTLING)
   // --------------------------------------------------
-  if (driverState != DriverState::ACTIVE) {
-    setPWM_L(0);
-    setPWM_R(0);
+  if (driverState == DriverState::SETTLING) {
     curL = 0;
     curR = 0;
-    targetL = 0;
-    targetR = 0;
     return;
   }
 
   // --------------------------------------------------
   // HARD STOP
   // --------------------------------------------------
-  if (systemState == SystemState::FAULT ||
-      driveState == DriveState::LOCKED) {
-    driveSafe();
+  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED) {
     curL = 0;
     curR = 0;
     targetL = 0;
     targetR = 0;
-    return;
-  }
-
-  // --------------------------------------------------
-  // DRIVER SETTLING
-  // --------------------------------------------------
-  if (driverState == DriverState::SETTLING) {
-    setPWM_L(0);
-    setPWM_R(0);
-    curL = 0;
-    curR = 0;
     return;
   }
 
@@ -73,7 +53,6 @@ void applyDrive(uint32_t now)
   // SYSTEM NOT ACTIVE
   // --------------------------------------------------
   if (systemState != SystemState::ACTIVE) {
-    driveSafe();
     curL = 0;
     curR = 0;
     targetL = 0;
@@ -107,16 +86,36 @@ void applyDrive(uint32_t now)
   applyCurrentLoop(finalTargetL, finalTargetR);
 
   // ==================================================
+  // 🔴 LOAD COMPENSATION (FIXED)
+  // ==================================================
+  if (abs(finalTargetL) > 20 || abs(finalTargetR) > 20)
+  {
+    float curL_mA = getMotorCurrentL();
+    float curR_mA = getMotorCurrentR();
+
+    static float filtL = 0;
+    static float filtR = 0;
+
+    filtL = filtL * 0.8f + curL_mA * 0.2f;
+    filtR = filtR * 0.8f + curR_mA * 0.2f;
+
+    constexpr float BASE_LOAD = 5.0f;
+
+    float loadErrL = filtL - BASE_LOAD;
+    float loadErrR = filtR - BASE_LOAD;
+
+    constexpr float K_COMP = 0.4f;
+
+    finalTargetL += loadErrL * K_COMP;
+    finalTargetR += loadErrR * K_COMP;
+  }
+
+  // ==================================================
   // POWER MANAGEMENT
   // ==================================================
-  if (isThermalEmergency()) {
-    finalTargetL = 0;
-    finalTargetR = 0;
-  } else {
-    float scale = getPowerScale();
-    finalTargetL *= scale;
-    finalTargetR *= scale;
-  }
+  float scale = getPowerScale();
+  finalTargetL *= scale;
+  finalTargetR *= scale;
 
   // ==================================================
   // FEEDFORWARD LOAD LIMIT
@@ -141,22 +140,41 @@ void applyDrive(uint32_t now)
   // ==================================================
   // CLAMP
   // ==================================================
-  finalTargetL =
-    constrain(finalTargetL, -PWM_TOP, PWM_TOP);
-
-  finalTargetR =
-    constrain(finalTargetR, -PWM_TOP, PWM_TOP);
+  finalTargetL = constrain(finalTargetL, -PWM_TOP, PWM_TOP);
+  finalTargetR = constrain(finalTargetR, -PWM_TOP, PWM_TOP);
 
   // ==================================================
-  // RAMP
+  // 🔴 ARBITRATION (CLEAN)
+  // ==================================================
+
+  // priority 1: LOCKED ONLY (systemState already handled above)
+  if (driveState == DriveState::LOCKED) {
+    finalTargetL = 0;
+    finalTargetR = 0;
+  }
+
+  // priority 2: THERMAL
+  else if (isThermalEmergency()) {
+    finalTargetL = 0;
+    finalTargetR = 0;
+  }
+
+  // priority 3: DRIVER NOT READY
+  else if (driverState != DriverState::ACTIVE) {
+    finalTargetL = 0;
+    finalTargetR = 0;
+  }
+
+  // ==================================================
+  // 🔴 DEADZONE (ต้องอยู่ก่อน RAMP)
+  // ==================================================
+  if (abs(finalTargetL) < 6) finalTargetL = 0;
+  if (abs(finalTargetR) < 6) finalTargetR = 0;
+
+  // ==================================================
+  // RAMP (ตัวเดียวของระบบ)
   // ==================================================
   updateDriveRamp(finalTargetL, finalTargetR);
-
-  // ==================================================
-  // DEADZONE
-  // ==================================================
-  if (abs(curL) < 6) curL = 0;
-  if (abs(curR) < 6) curR = 0;
 
   // ==================================================
   // OUTPUT
@@ -168,8 +186,7 @@ void applyDrive(uint32_t now)
 // FORCE SOFT STOP
 // ============================================================================
 
-void forceDriveSoftStop(uint32_t now)
-{
+void forceDriveSoftStop(uint32_t now) {
   if (driveState != DriveState::SOFT_STOP) {
     driveState = DriveState::SOFT_STOP;
     driveSoftStopStart_ms = now;
@@ -180,7 +197,6 @@ void forceDriveSoftStop(uint32_t now)
 // CHECK COMMAND ZERO
 // ============================================================================
 
-bool driveCommandZero()
-{
+bool driveCommandZero() {
   return (targetL == 0 && targetR == 0);
 }

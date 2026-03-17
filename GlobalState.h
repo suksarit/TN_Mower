@@ -21,7 +21,7 @@
 
 // terrain drag estimator
 extern float terrainDragAvg;
-
+extern float controlDt_s;
 // ======================================================
 // DRIVER STATE ENUM
 // ======================================================
