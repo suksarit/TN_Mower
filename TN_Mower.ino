@@ -35,6 +35,9 @@
 #include "FaultManager.h"
 #include "CommsManager.h"
 #include "DriverEnableManager.h"
+#include "FanManager.h"
+#include "VoltageManager.h"
+#include "ThermalManager.h"
 
 // ======================================================
 // FUNCTION PROTOTYPES
@@ -58,10 +61,6 @@ void i2cBusClear();
 bool readDriverTempsPT100(int &tL, int &tR);
 bool updateSensors(void);
 void latchFault(FaultCode code);
-void updateDriverFans(void);
-void setFanPWM_L(uint8_t pwm);
-void setFanPWM_R(uint8_t pwm);
-
 
 // DRIVE PIPELINE
 bool driveSafetyGuard();
@@ -114,6 +113,30 @@ constexpr uint8_t ACS_CAL_SAMPLE_N = 32;
 constexpr uint16_t ACS_CAL_TIMEOUT_MS = 400;
 
 // ============================================================================
+// TIMER CONTROL LOOP (LEVEL 4)
+// ============================================================================
+volatile bool controlFlag = false;
+volatile uint8_t tick = 0;
+volatile uint8_t controlTicks = 0;
+
+ISR(TIMER2_COMPA_vect) {
+  tick++;
+
+  if (tick >= 20) {
+    tick = 0;
+
+    if (controlTicks < 5)  // กัน overflow
+      controlTicks++;
+  }
+}
+
+// ============================================================================
+// CONTROL LOOP CONFIG (DETERMINISTIC)
+// ============================================================================
+constexpr uint32_t CONTROL_PERIOD_US = 20000;  // 20ms = 50Hz
+static uint32_t lastControl_us = 0;
+
+// ============================================================================
 // WATCHDOG DOMAINS (DUAL-LAYER ARCH)
 // ============================================================================
 constexpr uint16_t WD_SENSOR_TIMEOUT_MS = 120;
@@ -146,11 +169,6 @@ constexpr uint32_t LOOP_HARD_LIMIT_US =
 #define PWM_TOP 1067  // 15 kHz
 
 // ============================================================================
-// FUNCTION PROTOTYPES
-// ============================================================================
-uint8_t calcFanPwm(int temp, int tStart, int tFull);
-
-// ============================================================================
 // FAN CONTROL (DRIVER COOLING)
 // ============================================================================
 
@@ -174,6 +192,19 @@ constexpr uint8_t VOLT_SENSOR_FAIL_COUNT = 3;      // ต้อง fail 3 รอ
 // UTIL
 // ============================================================================
 
+// ============================================================================
+// BUFFER COPY (ATOMIC - ISR SAFE)
+// ============================================================================
+inline void copyDriveBuffer() {
+  cli();
+
+  driveBufMain.targetL = driveBufISR.targetL;
+  driveBufMain.targetR = driveBufISR.targetR;
+  driveBufMain.curL = driveBufISR.curL;
+  driveBufMain.curR = driveBufISR.curR;
+
+  sei();
+}
 
 uint8_t crc8_update(uint8_t crc, uint8_t data) {
   crc ^= data;
@@ -228,46 +259,25 @@ int freeRam() {
 
 #endif
 
-uint8_t calcFanPwm(int temp, int tStart, int tFull) {
 
-  if (temp < tStart) return 0;
-  if (temp >= tFull) return 255;
+void setupControlTimer() {
+  cli();
 
-  int mid = (tStart + tFull) / 2;
+  TCCR2A = 0;
+  TCCR2B = 0;
 
-  if (temp <= mid) {
+  TCCR2A |= (1 << WGM21);
 
-    return FAN_MIN_PWM + (temp - tStart) * (140 - FAN_MIN_PWM) / (mid - tStart);
+  // prescaler 64 → 250kHz
+  TCCR2B |= (1 << CS22);
 
-  } else {
+  // 1ms → 250 ticks
+  OCR2A = 249;
 
-    return 140 + (temp - mid) * (255 - 140) / (tFull - mid);
-  }
+  TIMSK2 |= (1 << OCIE2A);
+
+  sei();
 }
-
-
-void updateDriverFans(void) {
-
-  static uint8_t lastPwmL = 0;
-  static uint8_t lastPwmR = 0;
-
-  uint8_t pwmL = calcFanPwm(tempDriverL, FAN_L_START_C, FAN_L_FULL_C);
-  uint8_t pwmR = calcFanPwm(tempDriverR, FAN_R_START_C, FAN_R_FULL_C);
-
-  // hysteresis กันสั่น
-  if (abs((int)pwmL - (int)lastPwmL) < FAN_PWM_HYST) pwmL = lastPwmL;
-  if (abs((int)pwmR - (int)lastPwmR) < FAN_PWM_HYST) pwmR = lastPwmR;
-
-  if (pwmL == 0 && tempDriverL >= FAN_L_START_C) pwmL = FAN_IDLE_PWM;
-  if (pwmR == 0 && tempDriverR >= FAN_R_START_C) pwmR = FAN_IDLE_PWM;
-
-  setFanPWM_L(pwmL);
-  setFanPWM_R(pwmR);
-
-  lastPwmL = pwmL;
-  lastPwmR = pwmR;
-}
-
 
 
 bool driveSafetyGuard() {
@@ -327,46 +337,6 @@ void handleFaultImmediateCut() {
   // --------------------------------------------------
   starterActive = false;
   digitalWrite(RELAY_STARTER, LOW);
-}
-
-
-
-void updateVoltageWarning(uint32_t now) {
-  static uint32_t lastToggle_ms = 0;
-  static bool buzzerOn = false;
-  float v24 = engineVolt;
-
-  if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms) {
-    digitalWrite(PIN_BUZZER, LOW);
-    digitalWrite(RELAY_WARN, LOW);
-    buzzerOn = false;
-    return;
-  }
-
-  if (v24 >= V_WARN_LOW) {
-    digitalWrite(PIN_BUZZER, LOW);
-    digitalWrite(RELAY_WARN, LOW);
-    buzzerOn = false;
-    return;
-  }
-
-  // LEVEL 1
-  if (v24 < V_WARN_LOW && v24 >= V_WARN_CRITICAL) {
-    digitalWrite(RELAY_WARN, HIGH);
-
-    if (now - lastToggle_ms >= 500) {
-      lastToggle_ms = now;
-      buzzerOn = !buzzerOn;
-      digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
-    }
-    return;
-  }
-
-  // LEVEL 2
-  if (v24 < V_WARN_CRITICAL) {
-    digitalWrite(PIN_BUZZER, HIGH);
-    digitalWrite(RELAY_WARN, HIGH);
-  }
 }
 
 
@@ -466,8 +436,285 @@ void updateSystemState(uint32_t now) {
   }
 }
 
+
+
+
+
+void taskComms(uint32_t now) {
+  uint32_t tComms_us = micros();
+
+  updateComms(now);
+  updateRcCache();
+  updateIgnition();
+  updateSystemState(now);
+
+  uint32_t dtComms = micros() - tComms_us;
+
+  if (dtComms > BUDGET_COMMS_MS * 1000UL) {
+    if (++commsBudgetCnt >= PHASE_BUDGET_CONFIRM)
+      latchFault(FaultCode::COMMS_TIMEOUT);
+  } else {
+    commsBudgetCnt = 0;
+  }
+}
+
+void taskSensors(uint32_t now) {
+  uint32_t tSensor_us = micros();
+
+  bool sensorCycleDone = updateSensors();
+
+  uint32_t dtSensor = micros() - tSensor_us;
+
+  static uint8_t sensorBudgetCnt = 0;
+
+  if (dtSensor > (BUDGET_SENSORS_MS * 1000UL)) {
+    if (++sensorBudgetCnt >= PHASE_BUDGET_CONFIRM)
+      latchFault(FaultCode::SENSOR_TIMEOUT);
+  } else {
+    sensorBudgetCnt = 0;
+  }
+
+  static uint32_t i2cRecoveryStart_ms = 0;
+
+  if (sensorCycleDone) {
+    i2cRecoveryStart_ms = 0;
+    wdSensor.lastUpdate_ms = now;
+  } else {
+    if (i2cRecoveryStart_ms == 0)
+      i2cRecoveryStart_ms = now;
+
+    if (now - i2cRecoveryStart_ms > 1500) {
+      latchFault(FaultCode::VOLT_SENSOR_FAULT);
+    }
+  }
+}
+
+void taskDriveEvents(uint32_t now) {
+  curA_snapshot[0] = curA[0];
+  curA_snapshot[1] = curA[1];
+  curA_snapshot[2] = curA[2];
+  curA_snapshot[3] = curA[3];
+
+  lastDriveEvent = DriveEvent::NONE;
+
+  updateEngineState(now);
+
+  idleCurrentAutoRezero(now);
+
+  static uint32_t lastDriveDetect_ms = 0;
+
+  if (now - lastDriveDetect_ms >= 20) {
+    lastDriveDetect_ms = now;
+
+    detectSideImbalanceAndSteer();
+    detectWheelStuck(now);
+    detectWheelLock();
+
+    if (detectMotorStall())
+      lastDriveEvent = DriveEvent::WHEEL_LOCK;
+  }
+}
+
+void taskSafety(uint32_t now) {
+  SafetyInput sin;
+
+  sin.curA[0] = curA[0];
+  sin.curA[1] = curA[1];
+  sin.curA[2] = curA[2];
+  sin.curA[3] = curA[3];
+
+  sin.tempDriverL = tempDriverL;
+  sin.tempDriverR = tempDriverR;
+  sin.faultLatched = faultLatched;
+  sin.driveEvent = lastDriveEvent;
+
+  SafetyThresholds sth = {
+    CUR_WARN_A,
+    CUR_LIMP_A,
+    TEMP_WARN_C,
+    TEMP_LIMP_C
+  };
+
+  SafetyState rawSafety = evaluateSafetyRaw(sin, sth);
+
+  updateSafetyStability(
+    rawSafety,
+    now,
+    autoReverseCount,
+    autoReverseActive,
+    lastDriveEvent);
+
+  if (faultLatched)
+    systemState = SystemState::FAULT;
+
+  processFaultReset(now);
+}
+
+bool taskSystemGate(uint32_t now, uint32_t loopStart_us) {
+  bool emergencyActive =
+    (systemState == SystemState::FAULT) || (getDriveSafety() == SafetyState::EMERGENCY);
+
+  if (systemState != SystemState::ACTIVE || emergencyActive) {
+    handleFaultImmediateCut();
+
+    digitalWrite(PIN_DRV_ENABLE, LOW);
+
+    backgroundFaultEEPROMTask(now);
+    monitorSubsystemWatchdogs(now);
+
+#if TELEMETRY_CSV
+    telemetryCSV(now, loopStart_us);
+#endif
+
+    digitalWrite(PIN_HW_WD_HB,
+                 !digitalRead(PIN_HW_WD_HB));
+
+    return false;
+  }
+
+  return true;
+}
+
+void taskBlade(uint32_t now) {
+  uint32_t tBlade_us = micros();
+
+  runBlade(now);
+
+  uint32_t dtBlade = micros() - tBlade_us;
+
+  if (dtBlade > BUDGET_BLADE_MS * 1000UL) {
+    if (++bladeBudgetCnt >= PHASE_BUDGET_CONFIRM)
+      latchFault(FaultCode::BLADE_TIMEOUT);
+  } else {
+    bladeBudgetCnt = 0;
+    wdBlade.lastUpdate_ms = now;
+  }
+}
+
+void taskAux(uint32_t now) {
+  // --------------------------------------------------
+  // AUX LOGIC (COMPUTE PHASE)
+  // --------------------------------------------------
+  updateThermalManager(now);
+  updateDriverFans();
+  updateVoltageWarning(now);
+
+  updateEngineThrottle();
+  updateStarter(now);
+
+  // --------------------------------------------------
+  // GIMBAL
+  // --------------------------------------------------
+  getGimbal().setSystemEnabled(
+    systemState == SystemState::ACTIVE && !requireIbusConfirm);
+
+  getGimbal().update(now);
+}
+
+void taskDriverEnable(uint32_t now) {
+  DriverEnableContext ctx;
+
+  ctx.systemState = systemState;
+  ctx.driveState = driveState;
+  ctx.driverState = driverState;
+
+  ctx.faultLatched = faultLatched;
+  ctx.driverRearmRequired = driverRearmRequired;
+  ctx.requireIbusConfirm = requireIbusConfirm;
+  ctx.autoReverseActive = autoReverseActive;
+
+  ctx.rcThrottle = rcThrottle;
+  ctx.rcSteer = rcSteer;
+
+  ctx.curL = driveBufMain.curL;
+  ctx.curR = driveBufMain.curR;
+  ctx.targetL = driveBufMain.targetL;
+  ctx.targetR = driveBufMain.targetR;
+
+  ctx.now = now;
+  ctx.systemActiveStart_ms = systemActiveStart_ms;
+  ctx.driverStateStart_ms = driverStateStart_ms;
+  ctx.driverEnabled_ms = driverEnabled_ms;
+  ctx.driverActiveStart_ms = driverActiveStart_ms;
+
+  updateDriverEnable(ctx);
+
+  driverState = ctx.driverState;
+  driverStateStart_ms = ctx.driverStateStart_ms;
+  driverEnabled_ms = ctx.driverEnabled_ms;
+  driverActiveStart_ms = ctx.driverActiveStart_ms;
+
+  curL = ctx.curL;
+  curR = ctx.curR;
+  targetL = ctx.targetL;
+  targetR = ctx.targetR;
+}
+
+void taskLoopSupervisor(uint32_t loopStart_us) {
+  uint32_t loopTime_us = micros() - loopStart_us;
+  uint32_t loopBudget_us = BUDGET_LOOP_MS * 1000UL;
+
+  if (loopTime_us > LOOP_HARD_LIMIT_US)
+    latchFault(FaultCode::LOOP_OVERRUN);
+
+  if (loopTime_us > loopBudget_us)
+    loopOverrunAccum_us += (loopTime_us - loopBudget_us);
+  else {
+    loopOverrunAccum_us -= LOOP_OVERRUN_RECOVER_US;
+    if (loopOverrunAccum_us < 0)
+      loopOverrunAccum_us = 0;
+  }
+
+  if (loopOverrunAccum_us > LOOP_OVERRUN_FAULT_US)
+    latchFault(FaultCode::LOOP_OVERRUN);
+}
+
+void taskWatchdog() {
+  int freeMem = freeRam();
+
+  if (freeMem < 600) {
+    latchFault(FaultCode::LOGIC_WATCHDOG);
+  }
+
+  bool wdHealthy =
+    !wdSensor.faulted && !wdComms.faulted && !wdDrive.faulted && !wdBlade.faulted && !faultLatched;
+
+  if (wdHealthy) {
+    wdt_reset();
+
+    digitalWrite(PIN_HW_WD_HB,
+                 !digitalRead(PIN_HW_WD_HB));
+  } else {
+    digitalWrite(PIN_HW_WD_HB, LOW);
+  }
+}
+
+void taskBackground(uint32_t now) {
+  monitorSubsystemWatchdogs(now);
+  backgroundFaultEEPROMTask(now);
+}
+
+void runControlLoop(uint32_t now, uint32_t loopStart_us) {
+  // ==================================================
+  // STAGE 1: UPDATE TARGET FROM RC
+  // ==================================================
+  updateDriveTarget();
+
+  driveBufISR.targetL = targetL;
+  driveBufISR.targetR = targetR;
+
+  // ==================================================
+  // STAGE 2: DRIVE STATE + CONTROL
+  // ==================================================
+  runDrive(now);
+  applyDrive(now);
+  driveBufISR.curL = curL;
+  driveBufISR.curR = curR;
+}
+
 void setup() {
 
+  setupControlTimer();
 // --------------------------------------------------
 // SERIAL (DEBUG)
 // --------------------------------------------------
@@ -481,7 +728,7 @@ void setup() {
   Serial2.begin(115200);  // Storm32
 
   ibus.begin(Serial1);  // iBUS = INPUT ONLY
- getGimbal().begin();  // Storm32 uses Seria
+  getGimbal().begin();  // Storm32 uses Seria
 
   getGimbal().forceOff();  // <<< HARD LOCK getGimbal() at boot
 
@@ -672,333 +919,78 @@ void setup() {
   wdt_enable(WDTO_1S);
 }
 
-void taskComms(uint32_t now)
-{
-  uint32_t tComms_us = micros();
-
-  updateComms(now);
-  updateRcCache();
-  updateIgnition();
-  updateSystemState(now);
-
-  uint32_t dtComms = micros() - tComms_us;
-
-  if (dtComms > BUDGET_COMMS_MS * 1000UL)
-  {
-    if (++commsBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::COMMS_TIMEOUT);
-  }
-  else
-  {
-    commsBudgetCnt = 0;
-  }
-}
-
-void taskSensors(uint32_t now)
-{
-  uint32_t tSensor_us = micros();
-
-  bool sensorCycleDone = updateSensors();
-
-  uint32_t dtSensor = micros() - tSensor_us;
-
-  static uint8_t sensorBudgetCnt = 0;
-
-  if (dtSensor > (BUDGET_SENSORS_MS * 1000UL))
-  {
-    if (++sensorBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::SENSOR_TIMEOUT);
-  }
-  else
-  {
-    sensorBudgetCnt = 0;
-  }
-
-  static uint32_t i2cRecoveryStart_ms = 0;
-
-  if (sensorCycleDone)
-  {
-    i2cRecoveryStart_ms = 0;
-    wdSensor.lastUpdate_ms = now;
-  }
-  else
-  {
-    if (i2cRecoveryStart_ms == 0)
-      i2cRecoveryStart_ms = now;
-
-    if (now - i2cRecoveryStart_ms > 1500)
-    {
-      latchFault(FaultCode::VOLT_SENSOR_FAULT);
-    }
-  }
-}
-
-void taskDriveEvents(uint32_t now)
-{
-  curA_snapshot[0] = curA[0];
-  curA_snapshot[1] = curA[1];
-  curA_snapshot[2] = curA[2];
-  curA_snapshot[3] = curA[3];
-
-  lastDriveEvent = DriveEvent::NONE;
-
-  updateEngineState(now);
-
-  idleCurrentAutoRezero(now);
-
-  static uint32_t lastDriveDetect_ms = 0;
-
-  if (now - lastDriveDetect_ms >= 20)
-  {
-    lastDriveDetect_ms = now;
-
-    detectSideImbalanceAndSteer();
-    detectWheelStuck(now);
-    detectWheelLock();
-
-    if (detectMotorStall())
-      lastDriveEvent = DriveEvent::WHEEL_LOCK;
-  }
-}
-
-void taskSafety(uint32_t now)
-{
-  SafetyInput sin;
-
-  sin.curA[0] = curA[0];
-  sin.curA[1] = curA[1];
-  sin.curA[2] = curA[2];
-  sin.curA[3] = curA[3];
-
-  sin.tempDriverL = tempDriverL;
-  sin.tempDriverR = tempDriverR;
-  sin.faultLatched = faultLatched;
-  sin.driveEvent = lastDriveEvent;
-
-  SafetyThresholds sth =
-  {
-    CUR_WARN_A,
-    CUR_LIMP_A,
-    TEMP_WARN_C,
-    TEMP_LIMP_C
-  };
-
-  SafetyState rawSafety = evaluateSafetyRaw(sin, sth);
-
-  updateSafetyStability(
-    rawSafety,
-    now,
-    autoReverseCount,
-    autoReverseActive,
-    lastDriveEvent);
-
-  if (faultLatched)
-    systemState = SystemState::FAULT;
-
-  processFaultReset(now);
-}
-
-bool taskSystemGate(uint32_t now, uint32_t loopStart_us)
-{
-  bool emergencyActive =
-    (systemState == SystemState::FAULT) ||
-    (getDriveSafety() == SafetyState::EMERGENCY);
-
-  if (systemState != SystemState::ACTIVE || emergencyActive)
-  {
-    handleFaultImmediateCut();
-
-    digitalWrite(PIN_DRV_ENABLE, LOW);
-
-    backgroundFaultEEPROMTask(now);
-    monitorSubsystemWatchdogs(now);
-
-#if TELEMETRY_CSV
-    telemetryCSV(now, loopStart_us);
-#endif
-
-    digitalWrite(PIN_HW_WD_HB,
-                 !digitalRead(PIN_HW_WD_HB));
-
-    return false;
-  }
-
-  return true;
-}
-
-void taskDrive(uint32_t now)
-{
-  runDrive(now);
-
-  uint32_t tApply_us = micros();
-  applyDrive();
-  uint32_t dtApply = micros() - tApply_us;
-
-  if (dtApply > BUDGET_DRIVE_MS * 1000UL)
-  {
-    if (++driveBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::DRIVE_TIMEOUT);
-  }
-  else
-  {
-    driveBudgetCnt = 0;
-  }
-
-  wdDrive.lastUpdate_ms = now;
-}
-
-void taskBlade(uint32_t now)
-{
-  uint32_t tBlade_us = micros();
-
-  runBlade(now);
-
-  uint32_t dtBlade = micros() - tBlade_us;
-
-  if (dtBlade > BUDGET_BLADE_MS * 1000UL)
-  {
-    if (++bladeBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::BLADE_TIMEOUT);
-  }
-  else
-  {
-    bladeBudgetCnt = 0;
-    wdBlade.lastUpdate_ms = now;
-  }
-}
-
-void taskAux(uint32_t now)
-{
-  updateVoltageWarning(now);
-  updateDriverFans();
-  updateEngineThrottle();
-  updateStarter(now);
-
-  getGimbal().setSystemEnabled(
-    systemState == SystemState::ACTIVE &&
-    !requireIbusConfirm);
-
-  getGimbal().
-  
-  update(now);
-}
-
-void taskDriverEnable(uint32_t now)
-{
-  DriverEnableContext ctx;
-
-  ctx.systemState = systemState;
-  ctx.driveState = driveState;
-  ctx.driverState = driverState;
-
-  ctx.faultLatched = faultLatched;
-  ctx.driverRearmRequired = driverRearmRequired;
-  ctx.requireIbusConfirm = requireIbusConfirm;
-  ctx.autoReverseActive = autoReverseActive;
-
-  ctx.rcThrottle = rcThrottle;
-  ctx.rcSteer = rcSteer;
-
-  ctx.curL = curL;
-  ctx.curR = curR;
-  ctx.targetL = targetL;
-  ctx.targetR = targetR;
-
-  ctx.now = now;
-  ctx.systemActiveStart_ms = systemActiveStart_ms;
-  ctx.driverStateStart_ms = driverStateStart_ms;
-  ctx.driverEnabled_ms = driverEnabled_ms;
-  ctx.driverActiveStart_ms = driverActiveStart_ms;
-
-  updateDriverEnable(ctx);
-
-  driverState = ctx.driverState;
-  driverStateStart_ms = ctx.driverStateStart_ms;
-  driverEnabled_ms = ctx.driverEnabled_ms;
-  driverActiveStart_ms = ctx.driverActiveStart_ms;
-
-  curL = ctx.curL;
-  curR = ctx.curR;
-  targetL = ctx.targetL;
-  targetR = ctx.targetR;
-}
-
-void taskLoopSupervisor(uint32_t loopStart_us)
-{
-  uint32_t loopTime_us = micros() - loopStart_us;
-  uint32_t loopBudget_us = BUDGET_LOOP_MS * 1000UL;
-
-  if (loopTime_us > LOOP_HARD_LIMIT_US)
-    latchFault(FaultCode::LOOP_OVERRUN);
-
-  if (loopTime_us > loopBudget_us)
-    loopOverrunAccum_us += (loopTime_us - loopBudget_us);
-  else
-  {
-    loopOverrunAccum_us -= LOOP_OVERRUN_RECOVER_US;
-    if (loopOverrunAccum_us < 0)
-      loopOverrunAccum_us = 0;
-  }
-
-  if (loopOverrunAccum_us > LOOP_OVERRUN_FAULT_US)
-    latchFault(FaultCode::LOOP_OVERRUN);
-}
-
-void taskWatchdog()
-{
-  int freeMem = freeRam();
-
-  if (freeMem < 800)
-  {
-    latchFault(FaultCode::LOGIC_WATCHDOG);
-  }
-
-  bool wdHealthy =
-    !wdSensor.faulted &&
-    !wdComms.faulted &&
-    !wdDrive.faulted &&
-    !wdBlade.faulted &&
-    !faultLatched;
-
-  if (wdHealthy)
-  {
-    wdt_reset();
-
-    digitalWrite(PIN_HW_WD_HB,
-                 !digitalRead(PIN_HW_WD_HB));
-  }
-  else
-  {
-    digitalWrite(PIN_HW_WD_HB, LOW);
-  }
-}
-
-void taskBackground(uint32_t now)
-{
-  monitorSubsystemWatchdogs(now);
-  backgroundFaultEEPROMTask(now);
-}
-
-void loop()
-{
+void loop() {
   uint32_t now = millis();
   uint32_t loopStart_us = micros();
 
+  // --------------------------------------------------
+  // 🔴 REAL-TIME CONTROL (NO MISS + NO RACE)
+  // --------------------------------------------------
+  uint8_t ticksToRun;
+
+  // -----------------------------
+  // ATOMIC SNAPSHOT (CRITICAL)
+  // -----------------------------
+  cli();
+  ticksToRun = controlTicks;
+  controlTicks = 0;
+  sei();
+
+  // -----------------------------
+  // RUN CONTROL LOOP
+  // -----------------------------
+  while (ticksToRun > 0) {
+    ticksToRun--;
+
+    uint32_t ctrlStart = micros();
+
+    // -------------------------
+    // CONTROL LOOP (REAL-TIME)
+    // -------------------------
+    uint32_t ctrlNow = millis();
+    runControlLoop(ctrlNow, loopStart_us);
+
+    // -------------------------
+    // OVERRUN PROTECTION
+    // -------------------------
+    uint32_t ctrlTime = micros() - ctrlStart;
+
+    if (ctrlTime > CONTROL_PERIOD_US) {
+      latchFault(FaultCode::LOOP_OVERRUN);
+      break;
+    }
+  }
+
+  // --------------------------------------------------
+  // 🔴 COPY BUFFER (ทำครั้งเดียวหลัง control)
+  // --------------------------------------------------
+  copyDriveBuffer();
+
+  // --------------------------------------------------
+  // BACKGROUND TASK (NON REAL-TIME)
+  // --------------------------------------------------
   taskComms(now);
   taskSensors(now);
   taskDriveEvents(now);
   taskSafety(now);
 
+  // --------------------------------------------------
+  // SYSTEM GATE (FAULT / EMERGENCY)
+  // --------------------------------------------------
   if (!taskSystemGate(now, loopStart_us))
     return;
 
-  taskDrive(now);
+  // --------------------------------------------------
+  // OTHER TASKS
+  // --------------------------------------------------
   taskBlade(now);
   taskAux(now);
   taskDriverEnable(now);
 
+  // --------------------------------------------------
+  // BACKGROUND / SUPERVISOR
+  // --------------------------------------------------
   taskBackground(now);
   taskLoopSupervisor(loopStart_us);
-
   taskWatchdog();
 }

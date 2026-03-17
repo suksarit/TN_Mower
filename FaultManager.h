@@ -6,3 +6,4 @@
 
 void latchFault(FaultCode code);
 void clearFault();
+

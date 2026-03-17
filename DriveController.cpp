@@ -14,6 +14,7 @@
 #include "SystemTypes.h"
 #include "CommsManager.h"
 #include "Storm32Controller.h"
+#include "ThermalManager.h"
 
 // AUTO REVERSE STATE
 uint32_t autoReverseStart_ms = 0;
@@ -32,12 +33,16 @@ float stallEnergy = 0.0f;
 uint32_t stallEnergyLast_ms = 0;
 
 #define HBRIDGE_L_OFF() (PORTA &= ~0b00000011)
-#define HBRIDGE_L_FWD() { PORTA = (PORTA & ~0b00000011) | 0b00000001; }
-#define HBRIDGE_L_REV() { PORTA = (PORTA & ~0b00000011) | 0b00000010; }
+#define HBRIDGE_L_FWD() \
+  { PORTA = (PORTA & ~0b00000011) | 0b00000001; }
+#define HBRIDGE_L_REV() \
+  { PORTA = (PORTA & ~0b00000011) | 0b00000010; }
 
 #define HBRIDGE_R_OFF() (PORTA &= ~0b00001100)
-#define HBRIDGE_R_FWD() { PORTA = (PORTA & ~0b00001100) | 0b00000100; }
-#define HBRIDGE_R_REV() { PORTA = (PORTA & ~0b00001100) | 0b00001000; }
+#define HBRIDGE_R_FWD() \
+  { PORTA = (PORTA & ~0b00001100) | 0b00000100; }
+#define HBRIDGE_R_REV() \
+  { PORTA = (PORTA & ~0b00001100) | 0b00001000; }
 
 
 void runDrive(uint32_t now) {
@@ -103,8 +108,6 @@ void runDrive(uint32_t now) {
       // ==================================================
 
     case DriveState::RUN:
-
-      updateDriveRamp(targetL, targetR);
 
       if (safety == SafetyState::EMERGENCY) {
         driveState = DriveState::SOFT_STOP;
@@ -213,27 +216,19 @@ void runDrive(uint32_t now) {
   }
 }
 
-
-void applyDrive() {
-
-  uint32_t now = millis();
+void applyDrive(uint32_t now) {
 
   // --------------------------------------------------
   // DRIVER NOT ENABLED → BLOCK PWM OUTPUT
   // --------------------------------------------------
   if (driverState != DriverState::ACTIVE) {
 
-    // --------------------------------------------
-    // HARD BLOCK DRIVE OUTPUT
-    // --------------------------------------------
     setPWM_L(0);
     setPWM_R(0);
 
-    // reset ramp state
     curL = 0;
     curR = 0;
 
-    // IMPORTANT: clear command targets
     targetL = 0;
     targetR = 0;
 
@@ -257,9 +252,8 @@ void applyDrive() {
   }
 
   // ==================================================
-  // DRIVER SETTLING WINDOW (PWM BLANKING)
+  // DRIVER SETTLING WINDOW
   // ==================================================
-
   if (driverState == DriverState::SETTLING) {
 
     setPWM_L(0);
@@ -272,20 +266,19 @@ void applyDrive() {
   }
 
   // ==================================================
-// SAFETY GUARD
-// ==================================================
-if (systemState != SystemState::ACTIVE)
-{
-  driveSafe();
+  // SYSTEM SAFETY GUARD
+  // ==================================================
+  if (systemState != SystemState::ACTIVE) {
+    driveSafe();
 
-  curL = 0;
-  curR = 0;
+    curL = 0;
+    curR = 0;
 
-  targetL = 0;
-  targetR = 0;
+    targetL = 0;
+    targetR = 0;
 
-  return;
-}
+    return;
+  }
 
   // ==================================================
   // TARGET COMPUTE
@@ -307,6 +300,19 @@ if (systemState != SystemState::ACTIVE)
 
     finalTargetL *= stallScale;
     finalTargetR *= stallScale;
+  }
+
+  // ==================================================
+  // 🔴 THERMAL CONTROL (GLOBAL)
+  // ==================================================
+  float thermalScale = getThermalScale();
+
+  if (isThermalEmergency()) {
+    finalTargetL = 0;
+    finalTargetR = 0;
+  } else {
+    finalTargetL *= thermalScale;
+    finalTargetR *= thermalScale;
   }
 
   // ==================================================
@@ -346,7 +352,6 @@ if (systemState != SystemState::ACTIVE)
   // ==================================================
   outputMotorPWM();
 }
-
 
 void computeDriveTarget(float &finalTargetL,
                         float &finalTargetR,
@@ -482,32 +487,6 @@ void applyDriveLimits(float &finalTargetL,
 
   if (curA_R > CUR_LIMP_A)
     finalTargetR *= 0.5f;
-
-  // ==================================================
-  // 3️⃣ THERMAL DERATING
-  // ==================================================
-
-  if (tempDriverL > TEMP_WARN_C) {
-
-    float scale =
-      1.0f - (tempDriverL - TEMP_WARN_C) * 0.02f;
-
-    if (scale < 0.4f)
-      scale = 0.4f;
-
-    finalTargetL *= scale;
-  }
-
-  if (tempDriverR > TEMP_WARN_C) {
-
-    float scale =
-      1.0f - (tempDriverR - TEMP_WARN_C) * 0.02f;
-
-    if (scale < 0.4f)
-      scale = 0.4f;
-
-    finalTargetR *= scale;
-  }
 
   // ==================================================
   // 5️⃣ IMBALANCE CORRECTION
@@ -1735,10 +1714,6 @@ void updateDriveTarget() {
   targetR = constrain(outR, -PWM_TOP, PWM_TOP);
 }
 
-bool driveCommandZero()
-{
+bool driveCommandZero() {
   return (targetL == 0 && targetR == 0);
 }
-
-
-

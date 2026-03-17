@@ -278,3 +278,6 @@ void processFaultReset(uint32_t now) {
 
   ignitionWasOn = ignitionNow;
 }
+
+
+

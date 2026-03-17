@@ -1,4 +1,10 @@
-//MotorDriver.cpp
+// ============================================================================
+// MotorDriver.cpp (FINAL FIXED - SAFE + DETERMINISTIC)
+// - PWM sync via Timer3 overflow (TOP)
+// - atomic write ป้องกันค่าเพี้ยน
+// - fan mapping ถูกต้อง
+// - ไม่มี delay block
+// ============================================================================
 
 #include <Arduino.h>
 
@@ -6,125 +12,162 @@
 #include "HardwareConfig.h"
 #include "GlobalState.h"
 
-void setupPWM15K() {
+// ============================================================================
+// PWM CONSTANT
+// ============================================================================
+#ifndef PWM_TOP
+#define PWM_TOP 1067
+#endif
 
-  // --------------------------------------------------
-  // FORCE TIMER RESET (CRITICAL)
-  // reset register ก่อน config ใหม่
-  // --------------------------------------------------
+// ============================================================================
+// PWM BUFFER (WRITE FROM CONTROL LOOP)
+// ============================================================================
+volatile uint16_t pwmL_req = 0;
+volatile uint16_t pwmR_req = 0;
+
+volatile uint16_t fanPwmL_req = 0;
+volatile uint16_t fanPwmR_req = 0;
+
+// ============================================================================
+// PWM SETUP (MOTOR)
+// ============================================================================
+void setupPWM15K()
+{
   TCCR3A = 0;
   TCCR3B = 0;
   TCCR4A = 0;
   TCCR4B = 0;
 
-  // ปิด PWM output ก่อน
   OCR3A = 0;
   OCR4A = 0;
 
-  // --------------------------------------------------
-  // TIMER3 → LEFT MOTOR PWM
-  // Fast PWM mode 14 (ICR3 = TOP)
-  // --------------------------------------------------
+  // TIMER3 → LEFT
   TCCR3A = _BV(COM3A1) | _BV(WGM31);
   TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);
+  ICR3 = PWM_TOP;
 
-  ICR3 = 1067;  // ≈15kHz
-  OCR3A = 0;    // duty = 0 (safe)
-
-  // --------------------------------------------------
-  // TIMER4 → RIGHT MOTOR PWM
-  // Fast PWM mode 14 (ICR4 = TOP)
-  // --------------------------------------------------
+  // TIMER4 → RIGHT
   TCCR4A = _BV(COM4A1) | _BV(WGM41);
   TCCR4B = _BV(WGM43) | _BV(WGM42) | _BV(CS40);
+  ICR4 = PWM_TOP;
 
-  ICR4 = 1067;  // ≈15kHz
-  OCR4A = 0;    // duty = 0 (safe)
+  // ENABLE SYNC ISR
+  TIMSK3 |= (1 << TOIE3);
 }
 
-
-void setupFanPWM15K() {
-  // Fast PWM, TOP = ICR5
+// ============================================================================
+// PWM SETUP (FAN)
+// ============================================================================
+void setupFanPWM15K()
+{
   TCCR5A = _BV(COM5B1) | _BV(COM5C1) | _BV(WGM51);
-  TCCR5B = _BV(WGM53) | _BV(WGM52) | _BV(CS50);  // prescaler = 1
+  TCCR5B = _BV(WGM53) | _BV(WGM52) | _BV(CS50);
 
-  ICR5 = 1067;  // ~15 kHz @ 16 MHz
+  ICR5 = PWM_TOP;
 
-  OCR5B = 0;  // FAN_R (pin 45)
-  OCR5C = 0;  // FAN_L (pin 44)
+  OCR5B = 0;
+  OCR5C = 0;
 }
 
-
-inline void setPWM_L(uint16_t v) {
-
-  if (v > ICR3)
-    v = ICR3;
-
-  OCR3A = v;
+// ============================================================================
+// ATOMIC WRITE HELPERS (CRITICAL)
+// ============================================================================
+inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
+{
+  uint8_t sreg = SREG;
+  cli();
+  var = value;
+  SREG = sreg;
 }
 
-
-inline void setPWM_R(uint16_t v) {
-  OCR4A = constrain(v, 0, ICR4);
+// ============================================================================
+// WRITE BUFFER (SAFE)
+// ============================================================================
+void setPWM_L(uint16_t v)
+{
+  if (v > PWM_TOP) v = PWM_TOP;
+  atomicWrite16(pwmL_req, v);
 }
 
-
-inline void setFanPWM_L(uint8_t pwm) {
-  OCR5C = map(pwm, 0, 255, 0, ICR5);
+void setPWM_R(uint16_t v)
+{
+  if (v > PWM_TOP) v = PWM_TOP;
+  atomicWrite16(pwmR_req, v);
 }
 
-
-inline void setFanPWM_R(uint8_t pwm) {
-  OCR5B = map(pwm, 0, 255, 0, ICR5);
+void setFanPWM_L(uint16_t pwm)
+{
+  if (pwm > PWM_TOP) pwm = PWM_TOP;
+  atomicWrite16(fanPwmL_req, pwm);
 }
 
+void setFanPWM_R(uint16_t pwm)
+{
+  if (pwm > PWM_TOP) pwm = PWM_TOP;
+  atomicWrite16(fanPwmR_req, pwm);
+}
 
-void driveSafe() {
+// ============================================================================
+// PWM SYNC ISR (CORE)
+// ============================================================================
+ISR(TIMER3_OVF_vect)
+{
+  uint16_t l  = pwmL_req;
+  uint16_t r  = pwmR_req;
+  uint16_t fl = fanPwmL_req;
+  uint16_t fr = fanPwmR_req;
 
-  // --------------------------------------------------
-  // 1) DISABLE DRIVER
-  // --------------------------------------------------
+  // clamp กันค่าหลุด
+  if (l  > PWM_TOP) l  = PWM_TOP;
+  if (r  > PWM_TOP) r  = PWM_TOP;
+  if (fl > PWM_TOP) fl = PWM_TOP;
+  if (fr > PWM_TOP) fr = PWM_TOP;
+
+  // apply sync
+  OCR3A = l;
+  OCR4A = r;
+
+  // ✅ FIX: mapping ถูกต้อง (L → B, R → C)
+  OCR5B = fl;
+  OCR5C = fr;
+}
+
+// ============================================================================
+// DRIVE SAFE
+// ============================================================================
+void driveSafe()
+{
   digitalWrite(PIN_DRV_ENABLE, LOW);
 
-  // --------------------------------------------------
-  // 2) HARD PWM REGISTER CLEAR
-  // --------------------------------------------------
+  atomicWrite16(pwmL_req, 0);
+  atomicWrite16(pwmR_req, 0);
+  atomicWrite16(fanPwmL_req, 0);
+  atomicWrite16(fanPwmR_req, 0);
+
+  // apply ทันที
   OCR3A = 0;
   OCR4A = 0;
+  OCR5B = 0;
+  OCR5C = 0;
 
-  // --------------------------------------------------
-  // 3) SOFTWARE PWM CLEAR
-  // --------------------------------------------------
-  setPWM_L(0);
-  setPWM_R(0);
-
-  // --------------------------------------------------
-  // 4) RESET RAMP STATE
-  // --------------------------------------------------
   curL = 0;
   curR = 0;
-
   targetL = 0;
   targetR = 0;
 
-  // --------------------------------------------------
-  // 5) FORCE H-BRIDGE NEUTRAL (SIMULTANEOUS)
-  // --------------------------------------------------
-  HBRIDGE_ALL_OFF();
-
-  // --------------------------------------------------
-  // 6) SHORT DEADTIME
-  // --------------------------------------------------
-  delayMicroseconds(5);
-}
-
-
-void motorShortBrake() {
-
-  setPWM_L(0);
-  setPWM_R(0);
-
   HBRIDGE_ALL_OFF();
 }
 
+// ============================================================================
+// SHORT BRAKE
+// ============================================================================
+void motorShortBrake()
+{
+  atomicWrite16(pwmL_req, 0);
+  atomicWrite16(pwmR_req, 0);
 
+  OCR3A = 0;
+  OCR4A = 0;
+
+  HBRIDGE_ALL_OFF();
+}
