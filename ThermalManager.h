@@ -25,3 +25,5 @@ float getThermalScale(void);      // เผื่อ debug
 // FAN CONTROL (ใช้ใน FanManager)
 // ======================================================
 uint8_t getThermalFanLevel(void); // 0–255
+
+

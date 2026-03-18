@@ -12,3 +12,4 @@ void updateDriverFans(void);
 // ======================================================
 void setFanPWM_L(uint16_t pwm);
 void setFanPWM_R(uint16_t pwm);
+

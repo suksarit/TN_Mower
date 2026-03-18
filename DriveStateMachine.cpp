@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveStateMachine.cpp (FIXED TYPE + STABLE)
+// DriveStateMachine.cpp (FINAL - CLEAN STATE ONLY)
 // ============================================================================
 
 #include <Arduino.h>
@@ -45,19 +45,21 @@ void runDrive(uint32_t now)
     (abs(curL) > RUNAWAY_PWM_THRESHOLD ||
      abs(curR) > RUNAWAY_PWM_THRESHOLD);
 
-  if (commandZero && motorMoving) {
-
+  if (commandZero && motorMoving)
+  {
     if (runawayStart_ms == 0)
       runawayStart_ms = now;
 
-    if (now - runawayStart_ms > RUNAWAY_CONFIRM_MS) {
+    if (now - runawayStart_ms > RUNAWAY_CONFIRM_MS)
+    {
 #if DEBUG_SERIAL
       Serial.println(F("[DRIVE] RUNAWAY DETECTED"));
 #endif
       latchFault(FaultCode::DRIVE_TIMEOUT);
     }
-
-  } else {
+  }
+  else
+  {
     runawayStart_ms = 0;
   }
 
@@ -84,7 +86,8 @@ void runDrive(uint32_t now)
       limpSafeStart_ms = 0;
       driveSoftStopStart_ms = 0;
 
-      if (systemState == SystemState::ACTIVE) {
+      if (systemState == SystemState::ACTIVE)
+      {
         driveState = DriveState::RUN;
       }
 
@@ -93,10 +96,12 @@ void runDrive(uint32_t now)
     // --------------------------------------------------
     case DriveState::RUN:
 
-      if (safety == SafetyState::EMERGENCY) {
+      if (safety == SafetyState::EMERGENCY)
+      {
         driveState = DriveState::SOFT_STOP;
       }
-      else if (safety == SafetyState::LIMP) {
+      else if (safety == SafetyState::LIMP)
+      {
         driveState = DriveState::LIMP;
         limpSafeStart_ms = 0;
       }
@@ -106,7 +111,6 @@ void runDrive(uint32_t now)
     // --------------------------------------------------
     case DriveState::LIMP:
 
-      // 🔴 FIX: ต้องแปลงเป็น float ก่อน
       {
         float tmpL = targetL;
         float tmpR = targetR;
@@ -117,31 +121,32 @@ void runDrive(uint32_t now)
         targetR = (int16_t)tmpR;
       }
 
-      // จำกัดความเร็ว
+      // จำกัดกำลัง
       targetL /= 2;
       targetR /= 2;
 
-      if (safety == SafetyState::EMERGENCY) {
+      if (safety == SafetyState::EMERGENCY)
+      {
         driveState = DriveState::SOFT_STOP;
         break;
       }
 
-      if (safety == SafetyState::SAFE) {
-
+      if (safety == SafetyState::SAFE)
+      {
         if (limpSafeStart_ms == 0)
           limpSafeStart_ms = now;
 
-        else if (now - limpSafeStart_ms >= LIMP_RECOVER_MS) {
-
+        else if (now - limpSafeStart_ms >= LIMP_RECOVER_MS)
+        {
 #if DEBUG_SERIAL
           Serial.println(F("[DRIVE] LIMP RECOVER -> RUN"));
 #endif
-
           driveState = DriveState::RUN;
           limpSafeStart_ms = 0;
         }
-
-      } else {
+      }
+      else
+      {
         limpSafeStart_ms = 0;
       }
 
@@ -157,8 +162,8 @@ void runDrive(uint32_t now)
         driveSoftStopStart_ms = now;
 
       if ((curL == 0 && curR == 0) ||
-          (now - driveSoftStopStart_ms >= DRIVE_SOFT_STOP_TIMEOUT_MS)) {
-
+          (now - driveSoftStopStart_ms >= DRIVE_SOFT_STOP_TIMEOUT_MS))
+      {
         driveSafe();
         driveState = DriveState::LOCKED;
       }

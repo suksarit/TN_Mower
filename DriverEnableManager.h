@@ -42,3 +42,4 @@ struct DriverEnableContext
 void updateDriverEnable(DriverEnableContext &ctx);
 
 #endif
+

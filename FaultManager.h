@@ -54,3 +54,4 @@ FaultCode getActiveFault(void);
 
 // ควรหยุดระบบหรือไม่ (ใช้ใน main loop)
 bool shouldStopSystem(void);
+

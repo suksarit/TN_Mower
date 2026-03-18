@@ -226,3 +226,4 @@ void i2cBusClear()
   pinMode(SDA, INPUT_PULLUP);
   pinMode(SCL, INPUT_PULLUP);
 }
+

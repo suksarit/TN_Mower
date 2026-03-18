@@ -135,3 +135,4 @@ void updateVoltageWarning(uint32_t now)
     }
   }
 }
+

@@ -15,3 +15,4 @@ void applyAutoReverse(float &L, float &R, uint32_t now);
 
 // ใช้ใน DriveProtection
 void startAutoReverse(uint32_t now);
+

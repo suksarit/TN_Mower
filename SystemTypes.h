@@ -20,6 +20,8 @@ enum class SafetyState : uint8_t {
 
 // ============================================================================
 // DRIVE EVENT
+// ⚠️ ห้ามเปลี่ยนค่าของตัวเดิม (EEPROM / LOG)
+// เพิ่มใหม่ต้อง "ต่อท้าย" เท่านั้น
 // ============================================================================
 enum class DriveEvent : uint8_t {
   NONE = 0,
@@ -28,6 +30,11 @@ enum class DriveEvent : uint8_t {
   STUCK_RIGHT = 3,
   WHEEL_LOCK = 4,
   AUTO_REVERSE = 5,
+
+  // 🔴 เพิ่มใหม่ (ต่อท้ายเท่านั้น)
+  WHEEL_STUCK = 6,        // ติดหล่ม (recoverable)
+  TRACTION_LOSS = 7,      // ล้อฟรี (slip)
+
   _COUNT
 };
 
@@ -66,8 +73,7 @@ enum class BladeState : uint8_t {
 
 // ============================================================================
 // FAULT CODE (EXTENDABLE / EEPROM SAFE)
-// ลำดับห้ามสลับ ถ้าใช้งาน EEPROM ใน field แล้ว
-// เพิ่มใหม่ให้ใส่ก่อน _COUNT เสมอ
+// ⚠️ ห้ามสลับลำดับ
 // ============================================================================
 enum class FaultCode : uint8_t {
   NONE = 0,
@@ -91,6 +97,7 @@ enum class FaultCode : uint8_t {
 
   LOOP_OVERRUN,
   LOW_VOLTAGE_CRITICAL,
+
   _COUNT
 };
 

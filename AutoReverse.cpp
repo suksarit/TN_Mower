@@ -1,5 +1,5 @@
 // ============================================================================
-// AutoReverse.cpp (FIXED + STABLE + FULL FLOW)
+// AutoReverse.cpp (FIXED - TRUE CURRENT + STABLE DIRECTION + SAFE FLOW)
 // ============================================================================
 
 #include <Arduino.h>
@@ -9,6 +9,7 @@
 #include "SafetyManager.h"
 #include "FaultManager.h"
 #include "HardwareConfig.h"
+#include "SensorManager.h"
 
 // ======================================================
 // LOCAL STATE
@@ -19,7 +20,7 @@ static bool reverseRecoveryActive = false;
 static uint32_t reverseLockUntil_ms = 0;
 
 // ======================================================
-// APPLY AUTO REVERSE (MAIN ENTRY)
+// APPLY AUTO REVERSE
 // ======================================================
 
 void applyAutoReverse(float &finalTargetL,
@@ -27,11 +28,12 @@ void applyAutoReverse(float &finalTargetL,
                       uint32_t now)
 {
   // ==================================================
-  // 1️⃣ ACTIVE AUTO REVERSE
+  // ACTIVE AUTO REVERSE
   // ==================================================
 
   if (autoRev.active)
   {
+    // ---------------- SAFETY EXIT ----------------
     if (ibusCommLost || requireIbusConfirm || systemState != SystemState::ACTIVE)
     {
       autoRev.active = false;
@@ -39,8 +41,12 @@ void applyAutoReverse(float &finalTargetL,
       return;
     }
 
-    // ต้องมีโหลดจริง (กัน false trigger)
-    if (abs(curL) < 120 && abs(curR) < 120)
+    // ---------------- TRUE CURRENT CHECK ----------------
+    float curA_L = getMotorCurrentL();
+    float curA_R = getMotorCurrentR();
+
+    // ไม่มีโหลดจริง → ยกเลิก
+    if (abs(curA_L) < 2.0f && abs(curA_R) < 2.0f)
     {
       autoRev.active = false;
       autoReverseActive = false;
@@ -53,27 +59,17 @@ void applyAutoReverse(float &finalTargetL,
       int8_t dirL = 0;
       int8_t dirR = 0;
 
-      // LEFT
-      if (lastDirL > 0) dirL = -1;
-      else if (lastDirL < 0) dirL = 1;
-      else if (curL > 0) dirL = -1;
-      else if (curL < 0) dirL = 1;
-      else {
-        autoRev.active = false;
-        autoReverseActive = false;
-        return;
-      }
+      // ===== LEFT =====
+      if (lastDirL != 0)
+        dirL = -lastDirL;
+      else
+        dirL = (finalTargetL >= 0) ? -1 : 1;
 
-      // RIGHT
-      if (lastDirR > 0) dirR = -1;
-      else if (lastDirR < 0) dirR = 1;
-      else if (curR > 0) dirR = -1;
-      else if (curR < 0) dirR = 1;
-      else {
-        autoRev.active = false;
-        autoReverseActive = false;
-        return;
-      }
+      // ===== RIGHT =====
+      if (lastDirR != 0)
+        dirR = -lastDirR;
+      else
+        dirR = (finalTargetR >= 0) ? -1 : 1;
 
       finalTargetL = constrain(dirL * autoRev.pwm, -PWM_TOP, PWM_TOP);
       finalTargetR = constrain(dirR * autoRev.pwm, -PWM_TOP, PWM_TOP);
@@ -90,7 +86,7 @@ void applyAutoReverse(float &finalTargetL,
   }
 
   // ==================================================
-  // 2️⃣ RECOVERY WINDOW (รวมใน flow เดียวกัน)
+  // RECOVERY WINDOW
   // ==================================================
 
   if (reverseRecoveryActive)
@@ -112,13 +108,11 @@ void applyAutoReverse(float &finalTargetL,
 
 void startAutoReverse(uint32_t now)
 {
+  // ---------------- SAFETY ----------------
   if (getDriveSafety() != SafetyState::SAFE)
     return;
 
   if (reverseRecoveryActive)
-    return;
-
-  if (abs(targetL) < 200 && abs(targetR) < 200)
     return;
 
   if (driverState != DriverState::ACTIVE)
@@ -127,6 +121,18 @@ void startAutoReverse(uint32_t now)
   if (now < reverseLockUntil_ms)
     return;
 
+  // ---------------- TRUE CURRENT CHECK ----------------
+  float curA_L = getMotorCurrentL();
+  float curA_R = getMotorCurrentR();
+
+  if (abs(curA_L) < 3.0f && abs(curA_R) < 3.0f)
+    return;
+
+  // ---------------- COMMAND CHECK ----------------
+  if (abs(targetL) < 200 && abs(targetR) < 200)
+    return;
+
+  // ---------------- LOCK ----------------
   reverseLockUntil_ms = now + 1500;
 
   static uint32_t lastReverse_ms = 0;
@@ -136,14 +142,12 @@ void startAutoReverse(uint32_t now)
       now - lastReverse_ms < REVERSE_COOLDOWN_MS)
     return;
 
+  // ---------------- LIMIT ----------------
   if (autoReverseCount >= MAX_AUTO_REVERSE)
   {
     latchFault(FaultCode::OVER_CURRENT);
     return;
   }
-
-  if (abs(curL) < 200 && abs(curR) < 200)
-    return;
 
   // --------------------------------------------------
   // PARAM ESCALATION

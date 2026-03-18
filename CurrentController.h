@@ -22,3 +22,4 @@ void applyCurrentLoop(float &targetL, float &targetR);
 // - soft stop
 // - driver disable)
 void resetCurrentLoop();
+

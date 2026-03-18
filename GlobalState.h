@@ -245,3 +245,4 @@ inline int16_t ramp(int16_t current,
 inline Servo bladeServo;
 
 #endif
+

@@ -275,3 +275,4 @@ bool shouldStopSystem(void)
 {
   return faultLatched;
 }
+

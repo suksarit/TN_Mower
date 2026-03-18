@@ -126,7 +126,7 @@ ISR(TIMER2_COMPA_vect) {
   if (tick >= 20) {
     tick = 0;
 
-    if (controlTicks < 5)  // กัน overflow
+    if (controlTicks < 255)  // กัน overflow
       controlTicks++;
   }
 }
@@ -197,14 +197,35 @@ constexpr uint8_t VOLT_SENSOR_FAIL_COUNT = 3;      // ต้อง fail 3 รอ
 // BUFFER COPY (ATOMIC - ISR SAFE)
 // ============================================================================
 inline void copyDriveBuffer() {
-  cli();
 
-  driveBufMain.targetL = driveBufISR.targetL;
-  driveBufMain.targetR = driveBufISR.targetR;
-  driveBufMain.curL = driveBufISR.curL;
-  driveBufMain.curR = driveBufISR.curR;
+  float tL1, tR1, cL1, cR1;
+  float tL2, tR2, cL2, cR2;
 
-  sei();
+  do {
+    cli();
+
+    tL1 = driveBufISR.targetL;
+    tR1 = driveBufISR.targetR;
+    cL1 = driveBufISR.curL;
+    cR1 = driveBufISR.curR;
+
+    sei();
+
+    cli();
+
+    tL2 = driveBufISR.targetL;
+    tR2 = driveBufISR.targetR;
+    cL2 = driveBufISR.curL;
+    cR2 = driveBufISR.curR;
+
+    sei();
+
+  } while (tL1 != tL2 || tR1 != tR2 || cL1 != cL2 || cR1 != cR2);
+
+  driveBufMain.targetL = tL1;
+  driveBufMain.targetR = tR1;
+  driveBufMain.curL = cL1;
+  driveBufMain.curR = cR1;
 }
 
 uint8_t crc8_update(uint8_t crc, uint8_t data) {
@@ -329,7 +350,7 @@ void handleFaultImmediateCut() {
 
   // ใช้ driveSafe เฉพาะ kill จริง
   driveSafe();
-  
+
   // --------------------------------------------------
   // 3) CUT BLADE THROTTLE
   // --------------------------------------------------
@@ -492,30 +513,32 @@ void taskSensors(uint32_t now) {
   }
 }
 
-void taskDriveEvents(uint32_t now) {
+void taskDriveEvents(uint32_t now)
+{
+  // ==================================================
+  // SNAPSHOT CURRENT (เก็บไว้ใช้ debug / log)
+  // ==================================================
   curA_snapshot[0] = curA[0];
   curA_snapshot[1] = curA[1];
   curA_snapshot[2] = curA[2];
   curA_snapshot[3] = curA[3];
 
+  // ==================================================
+  // RESET EVENT (ค่าจริงจะถูก set จาก DriveController)
+  // ==================================================
   lastDriveEvent = DriveEvent::NONE;
 
+  // ==================================================
+  // ENGINE STATE / AUTO ZERO
+  // ==================================================
   updateEngineState(now);
-
   idleCurrentAutoRezero(now);
 
-  static uint32_t lastDriveDetect_ms = 0;
-
-  if (now - lastDriveDetect_ms >= 20) {
-    lastDriveDetect_ms = now;
-
-    detectSideImbalanceAndSteer();
-    detectWheelStuck(now);
-    detectWheelLock();
-
-    if (detectMotorStall())
-      lastDriveEvent = DriveEvent::WHEEL_LOCK;
-  }
+  // ==================================================
+  // ❌ NO DETECTION HERE
+  // ==================================================
+  // ฟังก์ชันนี้เป็น "monitor only"
+  // detection ทั้งหมดอยู่ใน DriveController.cpp เท่านั้น
 }
 
 void taskSafety(uint32_t now) {
@@ -697,19 +720,27 @@ void taskBackground(uint32_t now) {
   backgroundFaultEEPROMTask(now);
 }
 
-void runControlLoop(uint32_t now, uint32_t loopStart_us)
-{
+void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   // ==================================================
-  // 🔴 CREATE dt (FIX ERROR + ใช้งานจริง)
+  // 🔴 FIX 1: USE FIXED DT (DETERMINISTIC CONTROL)
   // ==================================================
-  static uint32_t lastNow = 0;
+  // CONTROL LOOP = 20ms (50Hz)
+  controlDt_s = 0.02f;
 
-  uint32_t dt_ms = now - lastNow;
-  lastNow = now;
+  // ==================================================
+  // 🔴 FIX 2: HARD SAFETY GUARD (BEFORE ANY CONTROL)
+  // ==================================================
+  // กันกรณี FAULT / LOCK / ยังไม่ rearm
+  if (!driveSafetyGuard()) {
 
-  if (dt_ms == 0) dt_ms = 1;   // กันหาร 0
+    // force zero output (ISR buffer)
+    driveBufISR.targetL = 0;
+    driveBufISR.targetR = 0;
+    driveBufISR.curL = 0;
+    driveBufISR.curR = 0;
 
-  controlDt_s = dt_ms / 1000.0f;
+    return;
+  }
 
   // ==================================================
   // STAGE 1: UPDATE TARGET FROM RC
@@ -720,14 +751,46 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   driveBufISR.targetR = targetR;
 
   // ==================================================
+  // 🔴 FIX 3: SYSTEM STATE GUARD (DOUBLE LAYER SAFETY)
+  // ==================================================
+  if (systemState != SystemState::ACTIVE) {
+
+    driveSafe();  // ตัด PWM ทันที
+
+    driveBufISR.curL = 0;
+    driveBufISR.curR = 0;
+
+    return;
+  }
+
+  // ==================================================
   // STAGE 2: DRIVE STATE + CONTROL
   // ==================================================
   runDrive(now);
+
+  // ==================================================
+  // 🔴 FIX 4: FINAL GUARD BEFORE OUTPUT (CRITICAL)
+  // ==================================================
+  if (systemState != SystemState::ACTIVE || driveState == DriveState::LOCKED) {
+
+    driveSafe();
+
+    driveBufISR.curL = 0;
+    driveBufISR.curR = 0;
+
+    return;
+  }
+
   applyDrive(now);
 
-  // 🔴 FIX 3: feed watchdog
+  // ==================================================
+  // 🔴 FIX 5: WATCHDOG FEED (REAL-TIME DOMAIN)
+  // ==================================================
   wdDrive.lastUpdate_ms = now;
 
+  // ==================================================
+  // UPDATE FEEDBACK BUFFER
+  // ==================================================
   driveBufISR.curL = curL;
   driveBufISR.curR = curR;
 }
@@ -959,9 +1022,11 @@ void loop() {
   // -----------------------------
   // RUN CONTROL LOOP
   // -----------------------------
-  while (ticksToRun > 0) {
-    ticksToRun--;
+  uint8_t maxCatchup = 3;  // จำกัด backlog
 
+  while (ticksToRun > 0 && maxCatchup--) {
+    ticksToRun--;
+   
     uint32_t ctrlStart = micros();
 
     // -------------------------

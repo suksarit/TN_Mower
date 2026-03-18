@@ -1,5 +1,5 @@
 // ============================================================================
-// CurrentController.cpp (CLEAN + SAFE PI LOOP)
+// CurrentController.cpp (FIXED - SINGLE INTEGRATOR + RESET SAFE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -9,11 +9,10 @@
 #include "GlobalState.h"
 #include "SensorManager.h"
 #include "CurrentController.h"
-#include "SensorManager.h"
 #include "HardwareConfig.h"
 
 // ==================================================
-// CURRENT LOOP STATE (LOCAL ONLY)
+// CURRENT LOOP STATE (GLOBAL STATIC - SINGLE SOURCE)
 // ==================================================
 static float iErrL = 0.0f;
 static float iErrR = 0.0f;
@@ -26,14 +25,15 @@ static float iErrR = 0.0f;
 void applyCurrentLoop(float &targetL, float &targetR)
 {
   // ==================================================
-  // TIME (dt จาก system)
+  // TIME (dt จาก control loop)
   // ==================================================
-  float dt = controlDt_s;   // ต้องมี global ตัวนี้ (วินาที)
+  float dt = controlDt_s;
 
-  if (dt <= 0.0001f) return;
+  if (dt <= 0.0001f)
+    return;
 
   // ==================================================
-  // MEASURE CURRENT
+  // MEASURE CURRENT (Amp)
   // ==================================================
   float measL = getMotorCurrentL();
   float measR = getMotorCurrentR();
@@ -45,11 +45,8 @@ void applyCurrentLoop(float &targetL, float &targetR)
   float errR = targetR - measR;
 
   // ==================================================
-  // INTEGRATOR (มี dt + anti-windup)
+  // INTEGRATOR (ANTI-WINDUP)
   // ==================================================
-  static float iErrL = 0;
-  static float iErrR = 0;
-
   constexpr float I_LIMIT = PWM_TOP * 0.5f;
 
   iErrL += errL * dt;
@@ -68,7 +65,7 @@ void applyCurrentLoop(float &targetL, float &targetR)
   float outR = KP * errR + KI * iErrR;
 
   // ==================================================
-  // APPLY
+  // APPLY OUTPUT
   // ==================================================
   targetL += outL;
   targetR += outR;
@@ -78,4 +75,18 @@ void applyCurrentLoop(float &targetL, float &targetR)
   // ==================================================
   targetL = constrain(targetL, -PWM_TOP, PWM_TOP);
   targetR = constrain(targetR, -PWM_TOP, PWM_TOP);
+}
+
+// ============================================================================
+// RESET CURRENT LOOP (CRITICAL FOR SAFETY)
+// ต้องเรียกเมื่อ:
+// - FAULT
+// - DRIVER DISABLE
+// - SOFT STOP
+// ============================================================================
+
+void resetCurrentLoop()
+{
+  iErrL = 0.0f;
+  iErrR = 0.0f;
 }
