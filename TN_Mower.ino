@@ -503,7 +503,8 @@ void taskDriveEvents(uint32_t now)
 
 }
 
-void taskSafety(uint32_t now) {
+void taskSafety(uint32_t now)
+{
   SafetyInput sin;
 
   sin.curA[0] = curA[0];
@@ -531,24 +532,19 @@ void taskSafety(uint32_t now) {
     autoReverseCount,
     autoReverseActive,
     lastDriveEvent);
-
-  if (faultLatched)
-    systemState = SystemState::FAULT;
-
-  processFaultReset(now);
 }
 
-bool taskSystemGate(uint32_t now, uint32_t loopStart_us) {
+bool taskSystemGate(uint32_t now, uint32_t loopStart_us)
+{
   bool emergencyActive =
-    (systemState == SystemState::FAULT) || (getDriveSafety() == SafetyState::EMERGENCY);
+    (systemState == SystemState::FAULT) ||
+    (getDriveSafety() == SafetyState::EMERGENCY);
 
-  if (systemState != SystemState::ACTIVE || emergencyActive) {
+  if (systemState != SystemState::ACTIVE || emergencyActive)
+  {
     handleFaultImmediateCut();
 
     digitalWrite(PIN_DRV_ENABLE, LOW);
-
-    backgroundFaultEEPROMTask(now);
-    monitorSubsystemWatchdogs(now);
 
 #if TELEMETRY_CSV
     telemetryCSV(now, loopStart_us);
@@ -677,8 +673,12 @@ void taskWatchdog() {
   }
 }
 
-void taskBackground(uint32_t now) {
+void taskBackground(uint32_t now)
+{
+  // WATCHDOG (central)
   monitorSubsystemWatchdogs(now);
+
+  // EEPROM (central)
   backgroundFaultEEPROMTask(now);
 }
 
@@ -1017,9 +1017,14 @@ void loop() {
   // BACKGROUND TASK (NON REAL-TIME)
   // --------------------------------------------------
   taskComms(now);
-  sensorTask(now);
-  taskDriveEvents(now);
-  taskSafety(now);
+sensorTask(now);
+
+// 🔴 ย้ายมาไว้ตรงนี้ (SYSTEM LEVEL)
+monitorSubsystemWatchdogs(now);
+processFaultReset(now);
+
+taskDriveEvents(now);
+taskSafety(now);
 
   // --------------------------------------------------
   // SYSTEM GATE (FAULT / EMERGENCY)
@@ -1041,4 +1046,6 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
+
+
 

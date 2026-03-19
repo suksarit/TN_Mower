@@ -7,51 +7,32 @@
 #include <Arduino.h>
 #include "SystemTypes.h"
 
-// ======================================================
-// CORE FAULT CONTROL
-// ======================================================
-
-// ยิง fault (มี priority + latch)
+// ================= CORE =================
+void initFaultSystem();
 void latchFault(FaultCode code);
-
-// clear fault (มีเงื่อนไข ปลอดภัยเท่านั้น)
 void clearFault(void);
 
-// ======================================================
-// BACKGROUND TASK
-// ======================================================
-
-// เขียน EEPROM แบบ background (เรียกใน loop หลัก)
-void backgroundFaultEEPROMTask(uint32_t now);
-
-// ======================================================
-// WATCHDOG MONITOR
-// ======================================================
-
-// ตรวจ watchdog ทุก subsystem
+// ================= WATCHDOG =================
 void monitorSubsystemWatchdogs(uint32_t now);
 
-// ======================================================
-// FAULT RESET LOGIC
-// ======================================================
-
-// reset fault ผ่าน ignition logic
-void processFaultReset(uint32_t now);
-
-// ======================================================
-// QUERY (ห้ามอ่าน global ตรง)
-// ======================================================
-
-// มี fault อยู่หรือไม่
+// ================= QUERY =================
 bool isFaultActive(void);
-
-// fault ปัจจุบันคืออะไร
 FaultCode getActiveFault(void);
-
-// ======================================================
-// UTILITY (ใช้ใน SystemGate)
-// ======================================================
-
-// ควรหยุดระบบหรือไม่ (ใช้ใน main loop)
 bool shouldStopSystem(void);
+
+// ================= LOG =================
+uint8_t getFaultLogCount();
+
+struct FaultRecord
+{
+  uint8_t  faultCode;
+  uint8_t  prevFault;
+  uint16_t engineVolt;
+  int16_t  throttle;
+  uint32_t timestamp;
+  uint16_t counter;
+};
+
+bool getFaultLog(uint8_t index, FaultRecord& out); 
+
 

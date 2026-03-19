@@ -27,19 +27,16 @@
 // MAIN DRIVE PIPELINE
 // ============================================================================
 
-void applyDrive(uint32_t now)
-{
+void applyDrive(uint32_t now) {
   // ==================================================
   // 🔴 RESET EVENT (สำคัญมาก)
   // ==================================================
   lastDriveEvent = DriveEvent::NONE;
 
   // ==================================================
-  // 0. SYSTEM GUARD
+  // 0. SYSTEM GUARD (เหลือเฉพาะ driver state)
   // ==================================================
-  if (driverState == DriverState::SETTLING ||
-      systemState != SystemState::ACTIVE)
-  {
+  if (driverState == DriverState::SETTLING) {
     curL = 0;
     curR = 0;
     targetL = 0;
@@ -53,9 +50,7 @@ void applyDrive(uint32_t now)
   // ==================================================
   // 1. HARD FAULT
   // ==================================================
-  if (systemState == SystemState::FAULT ||
-      driveState == DriveState::LOCKED)
-  {
+  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED) {
     forceDriveSoftStop(now);
 
     curL = 0;
@@ -78,7 +73,7 @@ void applyDrive(uint32_t now)
   // 4. CURRENT READ (single source)
   // ==================================================
   float curA_L = getMotorCurrentSafeL();
-float curA_R = getMotorCurrentSafeR();
+  float curA_R = getMotorCurrentSafeR();
 
   // ==================================================
   // 5. DETECTION (ไม่แก้ cur)
@@ -90,8 +85,7 @@ float curA_R = getMotorCurrentSafeR();
     finalTargetL,
     finalTargetR,
     curA_L,
-    curA_R
-  );
+    curA_R);
 
   // ==================================================
   // 6. STALL SCALE
@@ -100,6 +94,12 @@ float curA_R = getMotorCurrentSafeR();
 
   finalTargetL *= stallScale;
   finalTargetR *= stallScale;
+
+  // ==================================================
+  // 🔴 DEADZONE (ต้องมาก่อน current loop)
+  // ==================================================
+  if (abs(finalTargetL) < 6) finalTargetL = 0;
+  if (abs(finalTargetR) < 6) finalTargetR = 0;
 
   // ==================================================
   // 7. POWER LIMIT
@@ -117,8 +117,7 @@ float curA_R = getMotorCurrentSafeR();
   // ==================================================
   // 9. LOAD COMP (low priority)
   // ==================================================
-  if (abs(finalTargetL) > 20 || abs(finalTargetR) > 20)
-  {
+  if (abs(finalTargetL) > 20 || abs(finalTargetR) > 20) {
     static float filtL = 0;
     static float filtR = 0;
 
@@ -126,7 +125,7 @@ float curA_R = getMotorCurrentSafeR();
     filtR = filtR * 0.9f + curA_R * 0.1f;
 
     constexpr float BASE_LOAD = 5.0f;
-    constexpr float K_COMP = 0.18f;
+    constexpr float K_COMP = 0.10f;
 
     float compL = constrain((filtL - BASE_LOAD) * K_COMP, -60, 60);
     float compR = constrain((filtR - BASE_LOAD) * K_COMP, -60, 60);
@@ -136,19 +135,18 @@ float curA_R = getMotorCurrentSafeR();
   }
 
   // ==================================================
-  // 🔴 DEADZONE (ต้องมาก่อน current loop)
-  // ==================================================
-  if (abs(finalTargetL) < 6) finalTargetL = 0;
-  if (abs(finalTargetR) < 6) finalTargetR = 0;
-
-  // ==================================================
   // 🔴 HARD LIMIT (ก่อน control loop)
   // ==================================================
   finalTargetL = constrain(finalTargetL, -PWM_TOP, PWM_TOP);
   finalTargetR = constrain(finalTargetR, -PWM_TOP, PWM_TOP);
 
   // ==================================================
-  // 10. CURRENT LOOP (final control)
+  // RAMP (last stage only)
+  // ==================================================
+  updateDriveRamp(finalTargetL, finalTargetR);
+
+  // ==================================================
+  //  CURRENT LOOP (final control)
   // ==================================================
   applyCurrentLoop(finalTargetL, finalTargetR);
 
@@ -166,8 +164,7 @@ float curA_R = getMotorCurrentSafeR();
   if (driverState != DriverState::ACTIVE)
     forceStop = true;
 
-  if (forceStop)
-  {
+  if (forceStop) {
     finalTargetL = 0;
     finalTargetR = 0;
 
@@ -181,15 +178,9 @@ float curA_R = getMotorCurrentSafeR();
   }
 
   // ==================================================
-  // 12. RAMP (last stage only)
+  // FINAL HARD SAFETY (single point)
   // ==================================================
-  updateDriveRamp(finalTargetL, finalTargetR);
-
-  // ==================================================
-  // 🔴 FINAL HARD SAFETY (last defense)
-  // ==================================================
-  if (systemState != SystemState::ACTIVE)
-  {
+  if (systemState != SystemState::ACTIVE || driveState == DriveState::LOCKED || driverState != DriverState::ACTIVE) {
     finalTargetL = 0;
     finalTargetR = 0;
 
@@ -215,10 +206,8 @@ float curA_R = getMotorCurrentSafeR();
 // FORCE SOFT STOP
 // ============================================================================
 
-void forceDriveSoftStop(uint32_t now)
-{
-  if (driveState != DriveState::SOFT_STOP)
-  {
+void forceDriveSoftStop(uint32_t now) {
+  if (driveState != DriveState::SOFT_STOP) {
     driveState = DriveState::SOFT_STOP;
     driveSoftStopStart_ms = now;
 
@@ -226,19 +215,22 @@ void forceDriveSoftStop(uint32_t now)
     resetDriveRamp();
   }
 
-  curL *= 0.85f;
-  curR *= 0.85f;
+  uint32_t dt = now - driveSoftStopStart_ms;
 
-  if (abs(curL) < 5) curL = 0;
-  if (abs(curR) < 5) curR = 0;
+  // 0 → 300ms fade out
+  float k = 1.0f - constrain(dt / 300.0f, 0.0f, 1.0f);
+
+  curL *= k;
+  curR *= k;
+
+  if (abs(curL) < 3) curL = 0;
+  if (abs(curR) < 3) curR = 0;
 }
 
 // ============================================================================
 // CHECK COMMAND ZERO
 // ============================================================================
 
-bool driveCommandZero()
-{
+bool driveCommandZero() {
   return (abs(targetL) < 10 && abs(targetR) < 10);
 }
-

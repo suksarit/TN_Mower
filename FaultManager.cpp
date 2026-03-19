@@ -1,20 +1,155 @@
 // ============================================================================
-// FaultManager.cpp (FINAL - DEBOUNCE + PRIORITY + SAFE CLEAR + RECOVERY)
+// FaultManager.cpp (FULL SYSTEM - FIXED COMPLETE VERSION)
 // ============================================================================
 
 #include <Arduino.h>
 #include <EEPROM.h>
+#include <string.h>   // ✅ FIX: สำหรับ memset
 
 #include "SystemTypes.h"
 #include "GlobalState.h"
 #include "HardwareConfig.h"
 #include "FaultManager.h"
 #include "SafetyManager.h"
-#include "CommsManager.h"
 
 // ======================================================
-// LOCAL: FAULT PRIORITY
+// CONFIG
 // ======================================================
+
+#define MAX_FAULT_CODES 10
+#define FAULT_LOG_SIZE  20
+
+#define EEPROM_BASE_A   100
+#define EEPROM_BASE_B   400
+
+// ======================================================
+// STRUCT
+// ======================================================
+
+struct FaultBlock
+{
+  FaultRecord log[FAULT_LOG_SIZE];
+  uint8_t head;
+  uint8_t count;
+  uint8_t crc;
+};
+
+// ======================================================
+// CRC8
+// ======================================================
+
+static uint8_t crc8(const uint8_t* data, uint16_t len)
+{
+  uint8_t crc = 0;
+  for (uint16_t i = 0; i < len; i++)
+  {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++)
+      crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : (crc << 1);
+  }
+  return crc;
+}
+
+// ======================================================
+// STORAGE STATE
+// ======================================================
+
+static FaultBlock currentBlock;
+static bool useSlotA = true;
+static uint16_t faultCounter = 0;
+
+// ======================================================
+// LOAD FROM EEPROM
+// ======================================================
+
+static bool loadBlock(FaultBlock& out)
+{
+  FaultBlock a, b;
+
+  EEPROM.get(EEPROM_BASE_A, a);
+  EEPROM.get(EEPROM_BASE_B, b);
+
+  bool va = (crc8((uint8_t*)&a, sizeof(FaultBlock) - 1) == a.crc);
+  bool vb = (crc8((uint8_t*)&b, sizeof(FaultBlock) - 1) == b.crc);
+
+  if (va && vb)
+  {
+    out = (a.head >= b.head) ? a : b;
+    return true;
+  }
+  else if (va)
+  {
+    out = a;
+    return true;
+  }
+  else if (vb)
+  {
+    out = b;
+    return true;
+  }
+
+  memset(&out, 0, sizeof(FaultBlock));
+  return false;
+}
+
+// ======================================================
+// SAVE TO EEPROM
+// ======================================================
+
+static void saveBlock(FaultBlock& b)
+{
+  b.crc = crc8((uint8_t*)&b, sizeof(FaultBlock) - 1);
+
+  if (useSlotA)
+    EEPROM.put(EEPROM_BASE_A, b);
+  else
+    EEPROM.put(EEPROM_BASE_B, b);
+
+  useSlotA = !useSlotA;
+}
+
+// ======================================================
+// INIT (เรียกใน setup)
+// ======================================================
+
+void initFaultSystem()
+{
+  loadBlock(currentBlock);
+}
+
+// ======================================================
+// ADD LOG (RING BUFFER)
+// ======================================================
+
+static void pushFaultLog(FaultCode code)
+{
+  FaultRecord& rec = currentBlock.log[currentBlock.head];
+
+  rec.faultCode  = (uint8_t)code;
+  rec.prevFault  = (uint8_t)activeFault;
+  rec.engineVolt = (uint16_t)engineVolt;
+  rec.throttle   = (int16_t)rcThrottle;
+  rec.timestamp  = millis();
+  rec.counter    = faultCounter++;
+
+  currentBlock.head = (currentBlock.head + 1) % FAULT_LOG_SIZE;
+
+  if (currentBlock.count < FAULT_LOG_SIZE)
+    currentBlock.count++;
+
+  saveBlock(currentBlock);
+}
+
+// ======================================================
+// DEBOUNCE
+// ======================================================
+
+static uint32_t faultStartTime[MAX_FAULT_CODES] = {0};
+
+// ======================================================
+// PRIORITY
+// ======================================================
+
 static uint8_t getFaultPriority(FaultCode code)
 {
   switch (code)
@@ -29,52 +164,42 @@ static uint8_t getFaultPriority(FaultCode code)
 }
 
 // ======================================================
-// LOCAL: DEBOUNCE STORAGE
+// LATCH FAULT
 // ======================================================
-static uint32_t faultStartTime[10] = {0}; // รองรับ fault สูงสุด 10 code
 
-// ======================================================
-// FUNCTION: latchFault (มี debounce)
-// ======================================================
 void latchFault(FaultCode code)
 {
   if (code == FaultCode::NONE)
     return;
 
   uint8_t idx = (uint8_t)code;
+  if (idx >= MAX_FAULT_CODES)
+    return;
 
-  // --------------------------------------------------
-  // DEBOUNCE (ต้องเกิดต่อเนื่องก่อน latch)
-  // --------------------------------------------------
   if (faultStartTime[idx] == 0)
   {
     faultStartTime[idx] = millis();
     return;
   }
 
-  if (millis() - faultStartTime[idx] < 300) // 300ms debounce
+  if (millis() - faultStartTime[idx] < 300)
     return;
 
-  // --------------------------------------------------
-  // IGNORE SAME
-  // --------------------------------------------------
+  faultStartTime[idx] = 0;
+
   if (faultLatched && activeFault == code)
     return;
 
-  // --------------------------------------------------
-  // PRIORITY
-  // --------------------------------------------------
   if (faultLatched)
   {
     if (getFaultPriority(code) <= getFaultPriority(activeFault))
       return;
   }
 
+  pushFaultLog(code);
+
   activeFault = code;
   faultLatched = true;
-
-  faultToStore = code;
-  faultWritePending = true;
 
 #if DEBUG_SERIAL
   Serial.print(F("[FAULT] LATCH: "));
@@ -83,115 +208,27 @@ void latchFault(FaultCode code)
 }
 
 // ======================================================
-// EEPROM BACKGROUND TASK
+// WATCHDOG
 // ======================================================
-void backgroundFaultEEPROMTask(uint32_t now)
-{
-  if (!faultWritePending)
-    return;
 
-  if (faultToStore == FaultCode::NONE)
-  {
-    faultWritePending = false;
-    return;
-  }
-
-  if (faultWriteCount >= MAX_FAULT_WRITES_PER_BOOT)
-    return;
-
-  if (now - lastFaultWriteMs < FAULT_EEPROM_COOLDOWN_MS)
-    return;
-
-  uint8_t raw;
-  EEPROM.get(100, raw);
-
-  FaultCode lastStored =
-    isValidEnum<FaultCode>(raw) ?
-    static_cast<FaultCode>(raw) :
-    FaultCode::NONE;
-
-  uint8_t newRaw = static_cast<uint8_t>(faultToStore);
-
-  if (!isValidEnum<FaultCode>(newRaw))
-  {
-    faultWritePending = false;
-    return;
-  }
-
-  if (lastStored != faultToStore)
-  {
-    EEPROM.put(100, newRaw);
-
-    faultWriteCount++;
-    lastFaultWriteMs = now;
-
-#if DEBUG_SERIAL
-    Serial.print(F("[EEPROM] STORED: "));
-    Serial.println(newRaw);
-#endif
-  }
-
-  faultWritePending = false;
-}
-
-// ======================================================
-// WATCHDOG MONITOR (มี recovery)
-// ======================================================
-constexpr uint16_t WD_GRACE_MS = 40;
+constexpr uint16_t WD_GRACE_MS = 80;
 
 void monitorSubsystemWatchdogs(uint32_t now)
 {
-  // SENSOR
-  if (i2cState == I2CRecoverState::IDLE)
-  {
-    if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms + WD_GRACE_MS)
-    {
-      latchFault(FaultCode::LOGIC_WATCHDOG);
-      wdSensor.faulted = true;
-    }
-    else
-    {
-      wdSensor.faulted = false; // recover ได้
-    }
-  }
-
-  // COMMS
   if (now - wdComms.lastUpdate_ms > wdComms.timeout_ms + WD_GRACE_MS)
-  {
     latchFault(FaultCode::IBUS_LOST);
-    wdComms.faulted = true;
-  }
-  else
-  {
-    wdComms.faulted = false;
-  }
 
-  // DRIVE
   if (now - wdDrive.lastUpdate_ms > wdDrive.timeout_ms + WD_GRACE_MS)
-  {
     latchFault(FaultCode::DRIVE_TIMEOUT);
-    wdDrive.faulted = true;
-  }
-  else
-  {
-    wdDrive.faulted = false;
-  }
 
-  // BLADE
   if (now - wdBlade.lastUpdate_ms > wdBlade.timeout_ms + WD_GRACE_MS)
-  {
     latchFault(FaultCode::BLADE_TIMEOUT);
-    wdBlade.faulted = true;
-  }
-  else
-  {
-    wdBlade.faulted = false;
-  }
 }
 
 // ======================================================
-// RESET VIA IGNITION
+// RESET VIA IGNITION (FIX LINKER ERROR)
 // ======================================================
+
 void processFaultReset(uint32_t now)
 {
   static bool ignitionWasOn = false;
@@ -234,22 +271,36 @@ void processFaultReset(uint32_t now)
 }
 
 // ======================================================
-// CLEAR FAULT
+// BACKGROUND TASK (FIX LINKER ERROR)
 // ======================================================
+
+void backgroundFaultEEPROMTask(uint32_t now)
+{
+  // เวอร์ชันนี้เขียน EEPROM ตอนเกิด fault แล้ว
+  // ไม่ต้องทำอะไรใน background
+
+  (void)now;
+}
+
+// ======================================================
+// CLEAR
+// ======================================================
+
 void clearFault()
 {
   if (!faultLatched)
     return;
 
   if (getFaultPriority(activeFault) >= 4)
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[FAULT] CLEAR BLOCKED (CRITICAL)"));
+#endif
     return;
+  }
 
   faultLatched = false;
   activeFault = FaultCode::NONE;
-
-  systemState = SystemState::INIT;
-  driveState  = DriveState::IDLE;
-  bladeState  = BladeState::IDLE;
 
   forceSafetyState(SafetyState::SAFE);
 
@@ -261,6 +312,7 @@ void clearFault()
 // ======================================================
 // QUERY
 // ======================================================
+
 bool isFaultActive(void)
 {
   return faultLatched;
