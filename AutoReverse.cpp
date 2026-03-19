@@ -1,5 +1,5 @@
 // ============================================================================
-// AutoReverse.cpp (FIXED - TRUE CURRENT + STABLE DIRECTION + SAFE FLOW)
+// AutoReverse.cpp (PRODUCTION SAFE - NO JERK + STABLE + LOCKED DIRECTION)
 // ============================================================================
 
 #include <Arduino.h>
@@ -10,6 +10,7 @@
 #include "FaultManager.h"
 #include "HardwareConfig.h"
 #include "SensorManager.h"
+#include "DriveProtection.h"   // 🔴 ใช้ setDriveEvent()
 
 // ======================================================
 // LOCAL STATE
@@ -18,6 +19,10 @@
 static uint32_t autoReverseStart_ms = 0;
 static bool reverseRecoveryActive = false;
 static uint32_t reverseLockUntil_ms = 0;
+
+// 🔴 lock direction ระหว่าง reverse
+static int8_t revDirL = 0;
+static int8_t revDirR = 0;
 
 // ======================================================
 // APPLY AUTO REVERSE
@@ -33,20 +38,21 @@ void applyAutoReverse(float &finalTargetL,
 
   if (autoRev.active)
   {
-    // ---------------- SAFETY EXIT ----------------
-    if (ibusCommLost || requireIbusConfirm || systemState != SystemState::ACTIVE)
+    // ---------------- HARD SAFETY EXIT ----------------
+    if (ibusCommLost || requireIbusConfirm ||
+        systemState != SystemState::ACTIVE)
     {
       autoRev.active = false;
       autoReverseActive = false;
       return;
     }
 
-    // ---------------- TRUE CURRENT CHECK ----------------
+    // ---------------- CURRENT CHECK ----------------
     float curA_L = getMotorCurrentL();
     float curA_R = getMotorCurrentR();
 
-    // ไม่มีโหลดจริง → ยกเลิก
-    if (abs(curA_L) < 2.0f && abs(curA_R) < 2.0f)
+    // โหลดหาย = ยกเลิก
+    if (curA_L < 2.0f && curA_R < 2.0f)
     {
       autoRev.active = false;
       autoReverseActive = false;
@@ -56,24 +62,8 @@ void applyAutoReverse(float &finalTargetL,
     // ---------------- RUNNING ----------------
     if (now - autoRev.start_ms < autoRev.duration_ms)
     {
-      int8_t dirL = 0;
-      int8_t dirR = 0;
-
-      // ===== LEFT =====
-      if (lastDirL != 0)
-        dirL = -lastDirL;
-      else
-        dirL = (finalTargetL >= 0) ? -1 : 1;
-
-      // ===== RIGHT =====
-      if (lastDirR != 0)
-        dirR = -lastDirR;
-      else
-        dirR = (finalTargetR >= 0) ? -1 : 1;
-
-      finalTargetL = constrain(dirL * autoRev.pwm, -PWM_TOP, PWM_TOP);
-      finalTargetR = constrain(dirR * autoRev.pwm, -PWM_TOP, PWM_TOP);
-
+      finalTargetL = constrain(revDirL * autoRev.pwm, -PWM_TOP, PWM_TOP);
+      finalTargetR = constrain(revDirR * autoRev.pwm, -PWM_TOP, PWM_TOP);
       return;
     }
 
@@ -86,15 +76,15 @@ void applyAutoReverse(float &finalTargetL,
   }
 
   // ==================================================
-  // RECOVERY WINDOW
+  // RECOVERY WINDOW (soft output)
   // ==================================================
 
   if (reverseRecoveryActive)
   {
     if (now - autoReverseStart_ms < REVERSE_RECOVERY_MS)
     {
-      finalTargetL *= REVERSE_RECOVERY_LIMIT;
-      finalTargetR *= REVERSE_RECOVERY_LIMIT;
+      finalTargetL *= 0.6f;  // 🔴 ลดแรงลงอีก
+      finalTargetR *= 0.6f;
       return;
     }
 
@@ -108,7 +98,10 @@ void applyAutoReverse(float &finalTargetL,
 
 void startAutoReverse(uint32_t now)
 {
-  // ---------------- SAFETY ----------------
+  // ==================================================
+  // HARD SAFETY GUARD
+  // ==================================================
+
   if (getDriveSafety() != SafetyState::SAFE)
     return;
 
@@ -121,20 +114,28 @@ void startAutoReverse(uint32_t now)
   if (now < reverseLockUntil_ms)
     return;
 
-  // ---------------- TRUE CURRENT CHECK ----------------
+  // 🔴 FIX: ห้าม reverse ถ้ายังวิ่งเร็ว
+  if (abs(curL) > 120 || abs(curR) > 120)
+    return;
+
+  // ==================================================
+  // CURRENT CHECK
+  // ==================================================
   float curA_L = getMotorCurrentL();
   float curA_R = getMotorCurrentR();
 
-  if (abs(curA_L) < 3.0f && abs(curA_R) < 3.0f)
+  if (curA_L < 3.0f && curA_R < 3.0f)
     return;
 
-  // ---------------- COMMAND CHECK ----------------
+  // ==================================================
+  // COMMAND CHECK
+  // ==================================================
   if (abs(targetL) < 200 && abs(targetR) < 200)
     return;
 
-  // ---------------- LOCK ----------------
-  reverseLockUntil_ms = now + 1500;
-
+  // ==================================================
+  // COOLDOWN
+  // ==================================================
   static uint32_t lastReverse_ms = 0;
   constexpr uint32_t REVERSE_COOLDOWN_MS = 1200;
 
@@ -142,16 +143,18 @@ void startAutoReverse(uint32_t now)
       now - lastReverse_ms < REVERSE_COOLDOWN_MS)
     return;
 
-  // ---------------- LIMIT ----------------
+  // ==================================================
+  // LIMIT
+  // ==================================================
   if (autoReverseCount >= MAX_AUTO_REVERSE)
   {
     latchFault(FaultCode::OVER_CURRENT);
     return;
   }
 
-  // --------------------------------------------------
+  // ==================================================
   // PARAM ESCALATION
-  // --------------------------------------------------
+  // ==================================================
   uint16_t reverseTime;
   int16_t reversePWM;
 
@@ -165,9 +168,15 @@ void startAutoReverse(uint32_t now)
 
   reversePWM = constrain(reversePWM, 200, PWM_TOP / 2);
 
-  // --------------------------------------------------
+  // ==================================================
+  // 🔴 LOCK DIRECTION (สำคัญมาก)
+  // ==================================================
+  revDirL = (curL > 0) ? -1 : 1;
+  revDirR = (curR > 0) ? -1 : 1;
+
+  // ==================================================
   // START
-  // --------------------------------------------------
+  // ==================================================
   autoRev.active = true;
   autoRev.start_ms = now;
   autoRev.duration_ms = reverseTime;
@@ -179,5 +188,7 @@ void startAutoReverse(uint32_t now)
   autoReverseCount++;
   lastReverse_ms = now;
 
-  lastDriveEvent = DriveEvent::AUTO_REVERSE;
+  // 🔴 FIX: ใช้ safe event
+  setDriveEvent(DriveEvent::AUTO_REVERSE);
 }
+

@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveProtection.cpp (ADAPTIVE TERRAIN + SLIP CONTROL - PRODUCTION)
+// DriveProtection.cpp (PRODUCTION SAFE - FIXED ALL CRITICAL BUGS)
 // ============================================================================
 
 #include <Arduino.h>
@@ -20,11 +20,13 @@
 uint32_t stallStartTime = 0;
 uint32_t stuckStartTime = 0;
 
+static uint32_t lockStart_ms = 0;
+
 // ======================================================
 // TERRAIN MODEL
 // ======================================================
 
-static float terrainLoad = 0.0f;  // ค่าแรงต้านสะสม
+static float terrainLoad = 0.0f;
 static float slipRatio = 0.0f;
 
 static uint32_t lastTime_ms = 0;
@@ -34,40 +36,44 @@ static float stallEnergy = 0.0f;
 // TERRAIN UPDATE
 // ============================================================================
 
-static void updateTerrain(float curL, float curR) {
+static void updateTerrain(float curL, float curR)
+{
   float avg = (curL + curR) * 0.5f;
 
-  // LPF
   terrainLoad = terrainLoad * 0.95f + avg * 0.05f;
-
-  // clamp
   terrainLoad = constrain(terrainLoad, 0.0f, CUR_LIMP_A * 1.5f);
 }
 
 // ============================================================================
-// SLIP DETECTION
+// SLIP DETECTION (FIX: ignore turning)
 // ============================================================================
 
-static float computeSlip(float curL, float curR) {
+static float computeSlip(float curL, float curR)
+{
   float maxCur = max(curL, curR);
   if (maxCur < 5.0f) return 0.0f;
 
+  // 🔴 FIX: ignore turning
+  if (abs(targetL - targetR) > 200)
+    return 0.0f;
+
   float diff = fabs(curL - curR) / (maxCur + 0.001f);
 
-  // LPF
   slipRatio = slipRatio * 0.8f + diff * 0.2f;
 
   return slipRatio;
 }
 
 // ============================================================================
-// STALL SCALE (ADAPTIVE)
+// STALL SCALE (FIX: reset energy)
 // ============================================================================
 
-float computeStallScale(uint32_t now, float curL_A, float curR_A) {
+float computeStallScale(uint32_t now, float curL_A, float curR_A)
+{
   float curMax = max(curL_A, curR_A);
 
-  if (lastTime_ms == 0) {
+  if (lastTime_ms == 0)
+  {
     lastTime_ms = now;
     return 1.0f;
   }
@@ -82,40 +88,46 @@ float computeStallScale(uint32_t now, float curL_A, float curR_A) {
   updateTerrain(curL_A, curR_A);
 
   float terrainFactor = constrain(terrainLoad / CUR_WARN_A, 0.8f, 1.5f);
-
   float dynamicThreshold = STALL_CURRENT_A * terrainFactor;
 
-  if (curMax > dynamicThreshold) {
+  if (curMax > dynamicThreshold)
+  {
     float excess = curMax - dynamicThreshold;
     stallEnergy += excess * dtSec * 0.03f;
-  } else {
+  }
+  else
+  {
     stallEnergy *= 0.90f;
   }
+
+  // 🔴 FIX: HARD RESET
+  if (curMax < 8.0f)
+    stallEnergy = 0.0f;
 
   if (stallEnergy < STALL_POWER_LIMIT)
     return 1.0f;
 
   float scale = STALL_POWER_LIMIT / stallEnergy;
 
-  lastDriveEvent = DriveEvent::WHEEL_LOCK;
+  setDriveEvent(DriveEvent::WHEEL_LOCK);
 
   return constrain(scale, 0.3f, 1.0f);
 }
 
 // ============================================================================
-// SLIP + LIMIT
+// DRIVE LIMITS (SLIP + CURRENT)
 // ============================================================================
 
 void applyDriveLimits(float &tL,
-                      float &tR,
-                      float curL_A,
-                      float curR_A) {
+                     float &tR,
+                     float curL_A,
+                     float curR_A)
+{
   float slip = computeSlip(curL_A, curR_A);
 
-  // ==================================================
-  // SLIP CONTROL
-  // ==================================================
-  if (slip > 0.25f) {
+  // ---------------- SLIP ----------------
+  if (slip > 0.25f)
+  {
     float reduce = constrain((slip - 0.25f) * 1.5f, 0.0f, 0.4f);
 
     if (curL_A < curR_A)
@@ -123,12 +135,10 @@ void applyDriveLimits(float &tL,
     else
       tR *= (1.0f - reduce);
 
-    lastDriveEvent = DriveEvent::TRACTION_LOSS;
+    setDriveEvent(DriveEvent::TRACTION_LOSS);
   }
 
-  // ==================================================
-  // CURRENT LIMIT (ADAPTIVE)
-  // ==================================================
+  // ---------------- CURRENT LIMIT ----------------
   float terrainFactor = constrain(terrainLoad / CUR_WARN_A, 0.8f, 1.4f);
 
   float limitL = CUR_LIMP_A * terrainFactor;
@@ -145,13 +155,14 @@ void applyDriveLimits(float &tL,
 }
 
 // ============================================================================
-// IMBALANCE CORRECTION (SMART)
+// IMBALANCE CORRECTION (FIX: no reverse flip)
 // ============================================================================
 
 void detectSideImbalanceAndSteer(float &tL,
                                  float &tR,
                                  float curL_A,
-                                 float curR_A) {
+                                 float curR_A)
+{
   if (abs(tL) < 50 && abs(tR) < 50)
     return;
 
@@ -161,33 +172,39 @@ void detectSideImbalanceAndSteer(float &tL,
     return;
 
   float terrainFactor = constrain(terrainLoad / CUR_WARN_A, 0.5f, 1.5f);
-
   float gain = 0.4f * terrainFactor;
 
   float corr = constrain(diff * gain, -100.0f, 100.0f);
 
-  tL -= corr;
-  tR += corr;
+  float newL = tL - corr;
+  float newR = tR + corr;
 
-  lastDriveEvent = DriveEvent::IMBALANCE;
+  // 🔴 FIX: ห้ามกลับทิศ
+  if ((tL > 0 && newL < 0) || (tL < 0 && newL > 0))
+    newL = 0;
+
+  if ((tR > 0 && newR < 0) || (tR < 0 && newR > 0))
+    newR = 0;
+
+  tL = newL;
+  tR = newR;
+
+  setDriveEvent(DriveEvent::IMBALANCE);
 }
 
 // ============================================================================
-// STUCK DETECT (ADAPTIVE)
+// STUCK DETECT (FIX: safe reverse)
 // ============================================================================
 
-void detectWheelStuck(uint32_t now) {
+void detectWheelStuck(uint32_t now)
+{
   if (autoReverseActive)
     return;
 
   float slip = slipRatio;
 
-  if (slip < 0.35f) {
-    stuckStartTime = 0;
-    return;
-  }
-
-  if (terrainLoad < CUR_WARN_A) {
+  if (slip < 0.35f || terrainLoad < CUR_WARN_A)
+  {
     stuckStartTime = 0;
     return;
   }
@@ -195,27 +212,43 @@ void detectWheelStuck(uint32_t now) {
   if (stuckStartTime == 0)
     stuckStartTime = now;
 
-  if (now - stuckStartTime > 700) {
+  if (now - stuckStartTime > 700)
+  {
     stuckStartTime = 0;
-    lastDriveEvent = DriveEvent::STUCK_LEFT;
-    // หรือ
-    lastDriveEvent = DriveEvent::STUCK_RIGHT;
 
-    startAutoReverse(now);
+    setDriveEvent(DriveEvent::STUCK_LEFT);
+
+    // 🔴 FIX: ต้องหยุดก่อน reverse
+    if (abs(curL) < 120 && abs(curR) < 120)
+    {
+      startAutoReverse(now);
+    }
   }
 }
 
 // ============================================================================
-// LOCK DETECT
+// LOCK DETECT (FIX: debounce)
 // ============================================================================
 
-void detectWheelLock() {
+void detectWheelLock()
+{
   float cL = curLeft();
   float cR = curRight();
 
-  if (cL > CUR_LIMP_A && cR > CUR_LIMP_A) {
-    lastDriveEvent = DriveEvent::WHEEL_LOCK;
-    latchFault(FaultCode::OVER_CURRENT);
+  if (cL > CUR_LIMP_A && cR > CUR_LIMP_A)
+  {
+    if (lockStart_ms == 0)
+      lockStart_ms = millis();
+
+    if (millis() - lockStart_ms > 120)
+    {
+      setDriveEvent(DriveEvent::WHEEL_LOCK);
+      latchFault(FaultCode::OVER_CURRENT);
+    }
+  }
+  else
+  {
+    lockStart_ms = 0;
   }
 }
 
@@ -223,11 +256,13 @@ void detectWheelLock() {
 // MOTOR STALL
 // ============================================================================
 
-bool detectMotorStall(uint32_t now, float curL_A, float curR_A) {
+bool detectMotorStall(uint32_t now, float curL_A, float curR_A)
+{
   float curMax = max(curL_A, curR_A);
 
-  if (curMax > CUR_LIMP_A * 1.2f) {
-   lastDriveEvent = DriveEvent::WHEEL_LOCK;
+  if (curMax > CUR_LIMP_A * 1.2f)
+  {
+    setDriveEvent(DriveEvent::WHEEL_LOCK);
     return true;
   }
 

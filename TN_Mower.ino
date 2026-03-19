@@ -482,51 +482,18 @@ void taskComms(uint32_t now) {
   }
 }
 
-void taskSensors(uint32_t now) {
-  uint32_t tSensor_us = micros();
-
-  bool sensorCycleDone = updateSensors();
-
-  uint32_t dtSensor = micros() - tSensor_us;
-
-  static uint8_t sensorBudgetCnt = 0;
-
-  if (dtSensor > (BUDGET_SENSORS_MS * 1000UL)) {
-    if (++sensorBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::SENSOR_TIMEOUT);
-  } else {
-    sensorBudgetCnt = 0;
-  }
-
-  static uint32_t i2cRecoveryStart_ms = 0;
-
-  if (sensorCycleDone) {
-    i2cRecoveryStart_ms = 0;
-    wdSensor.lastUpdate_ms = now;
-  } else {
-    if (i2cRecoveryStart_ms == 0)
-      i2cRecoveryStart_ms = now;
-
-    if (now - i2cRecoveryStart_ms > 1500) {
-      latchFault(FaultCode::VOLT_SENSOR_FAULT);
-    }
-  }
-}
-
 void taskDriveEvents(uint32_t now)
 {
   // ==================================================
-  // SNAPSHOT CURRENT (เก็บไว้ใช้ debug / log)
+  // SNAPSHOT CURRENT (ใช้ค่าเดียวกับ CONTROL)
   // ==================================================
-  curA_snapshot[0] = curA[0];
-  curA_snapshot[1] = curA[1];
+  // 🔴 ต้องใช้ filtered current เท่านั้น
+  curA_snapshot[0] = getMotorCurrentL();
+  curA_snapshot[1] = getMotorCurrentR();
+
+  // ช่องอื่น (ถ้ามีจริง)
   curA_snapshot[2] = curA[2];
   curA_snapshot[3] = curA[3];
-
-  // ==================================================
-  // RESET EVENT (ค่าจริงจะถูก set จาก DriveController)
-  // ==================================================
-  lastDriveEvent = DriveEvent::NONE;
 
   // ==================================================
   // ENGINE STATE / AUTO ZERO
@@ -534,11 +501,6 @@ void taskDriveEvents(uint32_t now)
   updateEngineState(now);
   idleCurrentAutoRezero(now);
 
-  // ==================================================
-  // ❌ NO DETECTION HERE
-  // ==================================================
-  // ฟังก์ชันนี้เป็น "monitor only"
-  // detection ทั้งหมดอยู่ใน DriveController.cpp เท่านั้น
 }
 
 void taskSafety(uint32_t now) {
@@ -1055,7 +1017,7 @@ void loop() {
   // BACKGROUND TASK (NON REAL-TIME)
   // --------------------------------------------------
   taskComms(now);
-  taskSensors(now);
+  sensorTask(now);
   taskDriveEvents(now);
   taskSafety(now);
 
@@ -1079,3 +1041,4 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
+

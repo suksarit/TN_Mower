@@ -1,10 +1,51 @@
 // ============================================================================
-// TelemetryManager.h
+// TelemetryManager.h (FINAL - SAFE + SYSTEM CONTROL)
 // ============================================================================
 
 #pragma once
 
 #include <Arduino.h>
+
+// ============================================================================
+// TELEMETRY MODE CONTROL
+// ============================================================================
+
+// 🔴 ห้ามเปิดพร้อมกัน (กัน serial ล้น)
+#if (TELEMETRY_CSV == 1) && (TELEMETRY_BINARY == 1)
+#error "ห้ามเปิด TELEMETRY_CSV และ TELEMETRY_BINARY พร้อมกัน"
+#endif
+
+// 🔴 default fallback
+#ifndef TELEMETRY_CSV
+#define TELEMETRY_CSV     0
+#endif
+
+#ifndef TELEMETRY_BINARY
+#define TELEMETRY_BINARY  1
+#endif
+
+
+// ============================================================================
+// DEBUG CONTROL
+// ============================================================================
+
+#ifndef DEBUG_SERIAL
+#define DEBUG_SERIAL 1   // 0 = ปิด debug print
+#endif
+
+#ifndef TEST_MODE
+#define TEST_MODE 0
+#endif
+
+
+// ============================================================================
+// TELEMETRY TIMING
+// ============================================================================
+
+#ifndef TELEMETRY_PERIOD_MS
+#define TELEMETRY_PERIOD_MS 20   // 50Hz
+#endif
+
 
 // ============================================================================
 // TELEMETRY CSV OUTPUT
@@ -14,11 +55,22 @@ void telemetryCSV(
   uint32_t now,
   uint32_t loopStart_us);
 
+
+// ============================================================================
+// TELEMETRY BINARY OUTPUT
+// ============================================================================
+
+void telemetryBinary(
+  uint32_t now,
+  uint32_t loopStart_us);
+
+
 // ============================================================================
 // DEBUG TELEMETRY
 // ============================================================================
 
 void debugTelemetry(uint32_t now);
+
 
 // ============================================================================
 // TEST MODE TELEMETRY
@@ -26,9 +78,11 @@ void debugTelemetry(uint32_t now);
 
 void debugTestMode(uint32_t now);
 
+
 // ============================================================================
 // IBUS DEBUG
 // ============================================================================
 
 void debugIBus(uint32_t now);
+
 

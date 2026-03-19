@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveController.cpp (FINAL FIX - CORRECT PROTECTION PIPELINE)
+// DriveController.cpp (PRODUCTION SAFE - FINAL PIPELINE FIXED)
 // ============================================================================
 
 #include <Arduino.h>
@@ -30,6 +30,11 @@
 void applyDrive(uint32_t now)
 {
   // ==================================================
+  // 🔴 RESET EVENT (สำคัญมาก)
+  // ==================================================
+  lastDriveEvent = DriveEvent::NONE;
+
+  // ==================================================
   // 0. SYSTEM GUARD
   // ==================================================
   if (driverState == DriverState::SETTLING ||
@@ -39,6 +44,7 @@ void applyDrive(uint32_t now)
     curR = 0;
     targetL = 0;
     targetR = 0;
+
     resetCurrentLoop();
     resetDriveRamp();
     return;
@@ -51,30 +57,31 @@ void applyDrive(uint32_t now)
       driveState == DriveState::LOCKED)
   {
     forceDriveSoftStop(now);
+
     curL = 0;
     curR = 0;
     return;
   }
 
   // ==================================================
-  // 2. BASE TARGET (float pipeline)
+  // 2. BASE TARGET
   // ==================================================
   float finalTargetL = (float)targetL;
   float finalTargetR = (float)targetR;
 
   // ==================================================
-  // 3. AUTO REVERSE
+  // 3. AUTO REVERSE (ต้องมาก่อนทุกอย่าง)
   // ==================================================
   applyAutoReverse(finalTargetL, finalTargetR, now);
 
   // ==================================================
-  // 4. CURRENT READ (SOURCE เดียว)
+  // 4. CURRENT READ (single source)
   // ==================================================
-  float curA_L = getMotorCurrentL();
-  float curA_R = getMotorCurrentR();
+  float curA_L = getMotorCurrentSafeL();
+float curA_R = getMotorCurrentSafeR();
 
   // ==================================================
-  // 5. DETECT (ต้องมาก่อน scale)
+  // 5. DETECTION (ไม่แก้ cur)
   // ==================================================
   detectWheelStuck(now);
   detectWheelLock();
@@ -87,7 +94,7 @@ void applyDrive(uint32_t now)
   );
 
   // ==================================================
-  // 6. STALL SCALE (HIGH PRIORITY)
+  // 6. STALL SCALE
   // ==================================================
   float stallScale = computeStallScale(now, curA_L, curA_R);
 
@@ -103,12 +110,12 @@ void applyDrive(uint32_t now)
   finalTargetR *= powerScale;
 
   // ==================================================
-  // 8. DRIVE LIMITS (FINAL SAFETY LIMIT)
+  // 8. DRIVE LIMITS (safety layer)
   // ==================================================
   applyDriveLimits(finalTargetL, finalTargetR, curA_L, curA_R);
 
   // ==================================================
-  // 9. LOAD COMP (LOW PRIORITY)
+  // 9. LOAD COMP (low priority)
   // ==================================================
   if (abs(finalTargetL) > 20 || abs(finalTargetR) > 20)
   {
@@ -129,18 +136,24 @@ void applyDrive(uint32_t now)
   }
 
   // ==================================================
-  // 10. CURRENT LOOP
+  // 🔴 DEADZONE (ต้องมาก่อน current loop)
   // ==================================================
-  applyCurrentLoop(finalTargetL, finalTargetR);
+  if (abs(finalTargetL) < 6) finalTargetL = 0;
+  if (abs(finalTargetR) < 6) finalTargetR = 0;
 
   // ==================================================
-  // 11. FINAL CLAMP
+  // 🔴 HARD LIMIT (ก่อน control loop)
   // ==================================================
   finalTargetL = constrain(finalTargetL, -PWM_TOP, PWM_TOP);
   finalTargetR = constrain(finalTargetR, -PWM_TOP, PWM_TOP);
 
   // ==================================================
-  // 12. FINAL ARBITRATION
+  // 10. CURRENT LOOP (final control)
+  // ==================================================
+  applyCurrentLoop(finalTargetL, finalTargetR);
+
+  // ==================================================
+  // 11. FINAL ARBITRATION
   // ==================================================
   bool forceStop = false;
 
@@ -168,23 +181,32 @@ void applyDrive(uint32_t now)
   }
 
   // ==================================================
-  // 13. DEADZONE
-  // ==================================================
-  if (abs(finalTargetL) < 6) finalTargetL = 0;
-  if (abs(finalTargetR) < 6) finalTargetR = 0;
-
-  // ==================================================
-  // 14. RAMP (LAST STAGE)
+  // 12. RAMP (last stage only)
   // ==================================================
   updateDriveRamp(finalTargetL, finalTargetR);
 
   // ==================================================
-  // 15. OUTPUT
+  // 🔴 FINAL HARD SAFETY (last defense)
+  // ==================================================
+  if (systemState != SystemState::ACTIVE)
+  {
+    finalTargetL = 0;
+    finalTargetR = 0;
+
+    curL = 0;
+    curR = 0;
+
+    driveSafe();
+    return;
+  }
+
+  // ==================================================
+  // 13. OUTPUT
   // ==================================================
   outputMotorPWM();
 
   // ==================================================
-  // 16. WATCHDOG
+  // 14. WATCHDOG
   // ==================================================
   wdDrive.lastUpdate_ms = now;
 }
@@ -219,3 +241,4 @@ bool driveCommandZero()
 {
   return (abs(targetL) < 10 && abs(targetR) < 10);
 }
+

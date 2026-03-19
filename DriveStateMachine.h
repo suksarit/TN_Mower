@@ -27,3 +27,5 @@ void resetDriveStateMachine();
 
 // อ่านสถานะปัจจุบันของ drive
 uint8_t getDriveStateRaw();
+
+

@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveRamp.cpp (TUNED - SMOOTH + STABLE + REAL LOAD)
+// DriveRamp.cpp (PRODUCTION - NO EVENT + NO CONTROL FIGHT + STABLE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -13,8 +13,9 @@
 #include "DriveRamp.h"
 
 // ======================================================
-// LOCAL STATE (ANTI-STUCK)
+// LOCAL STATE
 // ======================================================
+
 static uint32_t stuckStart_ms = 0;
 static uint8_t stuckPhase = 0;
 
@@ -57,7 +58,7 @@ void updateDriveRamp(float &finalTargetL,
     accel = 7.0f;
 
   // ==================================================
-  // LOAD
+  // LOAD (ใช้ filtered จะดีกว่าในอนาคต)
   // ==================================================
   float curA_L = getMotorCurrentL();
   float curA_R = getMotorCurrentR();
@@ -65,7 +66,7 @@ void updateDriveRamp(float &finalTargetL,
   float load = max(curA_L, curA_R);
 
   // ==================================================
-  // ✅ FIX 1: TRACTION (adaptive + ไม่ดิ่ง)
+  // TRACTION (เฉพาะ smooth ไม่ใช่ protection)
   // ==================================================
   float slip = abs(curA_L - curA_R);
 
@@ -75,17 +76,15 @@ void updateDriveRamp(float &finalTargetL,
 
   if (slip > slipThreshold)
   {
-    float reduce = constrain((slip - slipThreshold) * 0.02f, 0.0f, 0.3f);
+    float reduce = constrain((slip - slipThreshold) * 0.015f, 0.0f, 0.25f);
     tractionScale = 1.0f - reduce;
-
-    lastDriveEvent = DriveEvent::TRACTION_LOSS;
   }
   else
   {
     tractionScale += 0.01f;
   }
 
-  tractionScale = constrain(tractionScale, 0.4f, 1.0f);
+  tractionScale = constrain(tractionScale, 0.5f, 1.0f);
 
   accel *= tractionScale;
 
@@ -94,13 +93,13 @@ void updateDriveRamp(float &finalTargetL,
   // ==================================================
   if (load > 40.0f)
   {
-    float scale = 1.0f - (load - 40.0f) * 0.015f;
-    scale = constrain(scale, 0.4f, 1.0f);
+    float scale = 1.0f - (load - 40.0f) * 0.012f;
+    scale = constrain(scale, 0.5f, 1.0f);
     accel *= scale;
   }
 
   // ==================================================
-  // ✅ FIX 2: ANTI-STUCK (นิ่งขึ้น)
+  // ANTI-STUCK (soft only, no event)
   // ==================================================
   bool stuck = (load > 55.0f && errMag > 250);
 
@@ -122,12 +121,12 @@ void updateDriveRamp(float &finalTargetL,
   }
 
   // ==================================================
-  // APPLY STUCK ACTION (ลดแรงกระชาก)
+  // APPLY STUCK ACTION (no event, no aggressive flip)
   // ==================================================
   switch (stuckPhase)
   {
     case 1:
-      accel *= 1.2f; // เดิม 1.4 → แรงไป
+      accel *= 1.15f;
       break;
 
     case 2:
@@ -136,26 +135,25 @@ void updateDriveRamp(float &finalTargetL,
 
       if (toggle == 0)
       {
-        finalTargetL *= 0.8f;
-        finalTargetR *= 1.1f;
+        finalTargetL *= 0.85f;
+        finalTargetR *= 1.05f;
       }
       else
       {
-        finalTargetL *= 1.1f;
-        finalTargetR *= 0.8f;
+        finalTargetL *= 1.05f;
+        finalTargetR *= 0.85f;
       }
       break;
     }
 
     case 3:
-      lastDriveEvent = DriveEvent::WHEEL_STUCK;
       stuckStart_ms = 0;
       stuckPhase = 0;
       break;
   }
 
   // ==================================================
-  // SAFE REVERSE
+  // SAFE REVERSE (สำคัญมาก)
   // ==================================================
   constexpr int16_t REVERSE_SAFE_PWM = 120;
 
@@ -190,13 +188,13 @@ void updateDriveRamp(float &finalTargetL,
   }
 
   // ==================================================
-  // ✅ FIX 3: S-CURVE (ลด overshoot)
+  // S-CURVE (ลด overshoot)
   // ==================================================
   float stepL = constrain(errL, -accel, accel);
   float stepR = constrain(errR, -accel, accel);
 
-  stepL = stepL * 0.8f + errL * 0.2f;
-  stepR = stepR * 0.8f + errR * 0.2f;
+  stepL = stepL * 0.85f + errL * 0.15f;
+  stepR = stepR * 0.85f + errR * 0.15f;
 
   curL += stepL;
   curR += stepR;
@@ -211,7 +209,7 @@ void updateDriveRamp(float &finalTargetL,
     curR *= 0.92f;
 
   // ==================================================
-  // TRACTION BALANCE
+  // BALANCE LIMIT (กันส่าย)
   // ==================================================
   constexpr int16_t MAX_DIFF = 300;
 

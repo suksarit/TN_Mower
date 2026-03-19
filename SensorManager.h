@@ -6,6 +6,8 @@
 
 #include <Arduino.h>
 
+void i2cBusClear(void);
+
 // ======================================================
 // SENSOR CORE
 // ======================================================
@@ -38,4 +40,15 @@ float getMotorCurrentL(void);
 
 // อ่านค่ากระแสมอเตอร์ขวา
 float getMotorCurrentR(void);
+
+// ======================================================
+// SAFE CURRENT (REDUNDANCY)
+// ======================================================
+float getMotorCurrentSafeL(void);
+float getMotorCurrentSafeR(void);
+
+// ======================================================
+// SENSOR TASK (NEW)
+// ======================================================
+void sensorTask(uint32_t now);
 

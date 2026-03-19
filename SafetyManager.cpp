@@ -1,5 +1,5 @@
 // ========================================================================================
-// SafetyManager.cpp  (PURE RAW + FILTER + STABILITY SEPARATED)
+// SafetyManager.cpp  (FINAL CLEAN - PURE SAFETY ONLY)
 // ========================================================================================
 
 #include <Arduino.h>  // for max()
@@ -98,30 +98,36 @@ void updateSafetyStability(
   // --------------------------------------------------
   // HYSTERESIS FILTER
   // --------------------------------------------------
-  if (raw == SafetyState::LIMP) {
-
+  if (raw == SafetyState::LIMP)
+  {
     warnConfirmCnt = 0;
 
-    if (++limpConfirmCnt >= LIMP_CONFIRM_CNT) {
+    if (++limpConfirmCnt >= LIMP_CONFIRM_CNT)
+    {
       filtered = SafetyState::LIMP;
       limpConfirmCnt = LIMP_CONFIRM_CNT;
-    } else {
+    }
+    else
+    {
       filtered = SafetyState::WARN;
     }
   }
-  else if (raw == SafetyState::WARN) {
-
+  else if (raw == SafetyState::WARN)
+  {
     limpConfirmCnt = 0;
 
-    if (++warnConfirmCnt >= WARN_CONFIRM_CNT) {
+    if (++warnConfirmCnt >= WARN_CONFIRM_CNT)
+    {
       filtered = SafetyState::WARN;
       warnConfirmCnt = WARN_CONFIRM_CNT;
-    } else {
+    }
+    else
+    {
       filtered = SafetyState::SAFE;
     }
   }
-  else {
-
+  else
+  {
     limpConfirmCnt = 0;
     warnConfirmCnt = 0;
   }
@@ -134,22 +140,23 @@ void updateSafetyStability(
   // --------------------------------------------------
   // STABILITY TIMER (SAFE HOLD)
   // --------------------------------------------------
-  if (filtered != SafetyState::SAFE) {
-
+  if (filtered != SafetyState::SAFE)
+  {
     safetyStability = SafetyStabilityState::SAFE_TRANSIENT;
     safeStableStart_ms = 0;
     return;
   }
 
-  if (safetyStability == SafetyStabilityState::SAFE_TRANSIENT) {
-
-    if (safeStableStart_ms == 0) {
+  if (safetyStability == SafetyStabilityState::SAFE_TRANSIENT)
+  {
+    if (safeStableStart_ms == 0)
+    {
       safeStableStart_ms = now;
       return;
     }
 
-    if (now - safeStableStart_ms >= SAFE_STABLE_TIME_MS) {
-
+    if (now - safeStableStart_ms >= SAFE_STABLE_TIME_MS)
+    {
       safetyStability = SafetyStabilityState::SAFE_STABLE;
 
       // RESET AUTO-REVERSE ONLY AFTER FULL SAFE WINDOW
@@ -178,7 +185,4 @@ void forceSafetyState(SafetyState s)
   safetyStability = SafetyStabilityState::SAFE_TRANSIENT;
   safeStableStart_ms = 0;
 }
-
-
-
 
