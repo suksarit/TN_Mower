@@ -1,24 +1,17 @@
 // ============================================================================
-// DriveStateMachine.cpp (FINAL - CLEAN STATE ONLY)
+// DriveStateMachine.cpp (TORQUE SYSTEM SAFE - NO CONTROL CONFLICT)
 // ============================================================================
 
 #include <Arduino.h>
 #include <stdint.h>
 #include <math.h>
 
-// ======================================================
-// CORE STATE + TYPES
-// ======================================================
 #include "GlobalState.h"
 #include "SystemTypes.h"
 #include "HardwareConfig.h"
 
-// ======================================================
-// MODULES
-// ======================================================
 #include "SafetyManager.h"
 #include "FaultManager.h"
-#include "DriveRamp.h"
 #include "MotorDriver.h"
 
 // ============================================================================
@@ -33,7 +26,6 @@ void runDrive(uint32_t now)
   // ==================================================
   // MOTOR RUNAWAY DETECTION
   // ==================================================
-
   constexpr int16_t RUNAWAY_PWM_THRESHOLD = 120;
   constexpr uint32_t RUNAWAY_CONFIRM_MS = 200;
 
@@ -64,15 +56,13 @@ void runDrive(uint32_t now)
   }
 
   // ==================================================
-  // CACHE SAFETY STATE
+  // SAFETY STATE
   // ==================================================
-
   SafetyState safety = getDriveSafety();
 
   // ==================================================
-  // DRIVE STATE MACHINE
+  // STATE MACHINE
   // ==================================================
-
   switch (driveState)
   {
     // --------------------------------------------------
@@ -80,8 +70,6 @@ void runDrive(uint32_t now)
 
       targetL = 0;
       targetR = 0;
-      curL = 0;
-      curR = 0;
 
       limpSafeStart_ms = 0;
       driveSoftStopStart_ms = 0;
@@ -111,17 +99,7 @@ void runDrive(uint32_t now)
     // --------------------------------------------------
     case DriveState::LIMP:
 
-      {
-        float tmpL = targetL;
-        float tmpR = targetR;
-
-        updateDriveRamp(tmpL, tmpR);
-
-        targetL = (int16_t)tmpL;
-        targetR = (int16_t)tmpR;
-      }
-
-      // จำกัดกำลัง
+      // จำกัด target แทนการยุ่ง control
       targetL /= 2;
       targetR /= 2;
 
@@ -161,7 +139,8 @@ void runDrive(uint32_t now)
       if (driveSoftStopStart_ms == 0)
         driveSoftStopStart_ms = now;
 
-      if ((curL == 0 && curR == 0) ||
+      // รอจน ramp + PID หยุดเอง
+      if ((abs(curL) < 3 && abs(curR) < 3) ||
           (now - driveSoftStopStart_ms >= DRIVE_SOFT_STOP_TIMEOUT_MS))
       {
         driveSafe();
@@ -172,6 +151,9 @@ void runDrive(uint32_t now)
 
     // --------------------------------------------------
     case DriveState::LOCKED:
+
+      targetL = 0;
+      targetR = 0;
 
       driveSafe();
       break;
@@ -185,8 +167,6 @@ void runDrive(uint32_t now)
 
       targetL = 0;
       targetR = 0;
-      curL = 0;
-      curR = 0;
 
       driveState = DriveState::LOCKED;
 
@@ -199,7 +179,6 @@ void runDrive(uint32_t now)
   // ==================================================
   // STATE CHANGE LOG
   // ==================================================
-
   if (driveState != lastDriveState)
   {
 #if DEBUG_SERIAL

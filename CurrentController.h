@@ -1,5 +1,5 @@
 // ============================================================================
-// CurrentController.h (FULL + SAFE CONTROL)
+// CurrentController.h (TORQUE PID CONTROL  
 // ============================================================================
 
 #pragma once
@@ -7,19 +7,30 @@
 #include <stdint.h>
 
 // ======================================================
-// MAIN CURRENT LOOP
+// TORQUE CONTROL (CURRENT PID)
 // ======================================================
-
-// ใช้ใน DriveController
-void applyCurrentLoop(float &targetL, float &targetR);
+//
+// INPUT:
+//   targetCurrentL / targetCurrentR  → Amp (กระแสเป้าหมาย)
+//
+// OUTPUT:
+//   เขียนค่าไปที่ curL / curR (PWM global)
+//
+// ใช้ใน: DriveController.cpp
+//
+void applyCurrentPID(float targetCurrentL, float targetCurrentR);
 
 // ======================================================
-// CONTROL / MAINTENANCE
+// CONTROL RESET (CRITICAL SAFETY)
 // ======================================================
-
-// reset integrator (ต้องเรียกเมื่อ:
+//
+// ต้องเรียกเมื่อ:
 // - fault
 // - soft stop
-// - driver disable)
+// - driver disable
+// - system reset
+//
 void resetCurrentLoop();
+
+
 

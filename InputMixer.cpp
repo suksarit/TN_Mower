@@ -1,5 +1,5 @@
 // ============================================================================
-// InputMixer.cpp (FIXED + STABLE + SAFE CONTROL)
+// InputMixer.cpp (IMPROVED - EXPO + SMOOTH + STABLE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -10,6 +10,16 @@
 #include "HardwareConfig.h"
 #include "SystemTypes.h"
 #include "SafetyManager.h"
+
+// ======================================================
+// EXPO FUNCTION
+// ======================================================
+
+static float applyExpo(float x, float expo)
+{
+  // expo: 0 = linear, 1 = soft
+  return x * (1.0f - expo) + x * x * x * expo;
+}
 
 // ======================================================
 // MAIN MIXER
@@ -30,7 +40,7 @@ void updateDriveTarget()
   }
 
   // ==================================================
-  // READ INPUT
+  // INPUT
   // ==================================================
   uint16_t rawThr = rcThrottle;
   uint16_t rawStr = rcSteer;
@@ -53,7 +63,8 @@ void updateDriveTarget()
   {
     if (neutral(rawThr) && neutral(rawStr))
       requireIbusConfirm = false;
-    else {
+    else
+    {
       targetL = 0;
       targetR = 0;
       return;
@@ -61,13 +72,13 @@ void updateDriveTarget()
   }
 
   // ==================================================
-  // SPIKE + RATE FILTER
+  // FILTER (SPIKE + RATE)
   // ==================================================
   static uint16_t lastThr = 1500;
   static uint16_t lastStr = 1500;
 
   constexpr int16_t SPIKE = 300;
-  constexpr int16_t RATE  = 80;
+  constexpr int16_t RATE  = 60;  // 🔴 ลดลงให้นุ่มขึ้น
 
   if (abs((int)rawThr - (int)lastThr) > SPIKE)
     rawThr = lastThr;
@@ -78,7 +89,6 @@ void updateDriveTarget()
   rawThr = constrain(rawThr, lastThr - RATE, lastThr + RATE);
   rawStr = constrain(rawStr, lastStr - RATE, lastStr + RATE);
 
-  // clamp final
   rawThr = constrain(rawThr, 1000, 2000);
   rawStr = constrain(rawStr, 1000, 2000);
 
@@ -86,80 +96,64 @@ void updateDriveTarget()
   lastStr = rawStr;
 
   // ==================================================
-  // AXIS MAP (SOFT DEADZONE)
+  // NORMALIZE (-1 → 1)
   // ==================================================
-  auto mapAxis = [](int16_t v) -> int16_t {
+  float thr = (rawThr - 1500) / 500.0f;
+  float str = (rawStr - 1500) / 500.0f;
 
-    constexpr int16_t IN_MIN = 1000;
-    constexpr int16_t IN_MAX = 2000;
-
-    constexpr int16_t DB = 50;
-    constexpr int16_t CENTER = 1500;
-
-    constexpr int16_t OUT_MAX = PWM_TOP;
-
-    int16_t diff = v - CENTER;
-
-    if (abs(diff) <= DB)
-      return 0;
-
-    if (diff < 0)
-    {
-      long m = map(v, IN_MIN, CENTER - DB, -OUT_MAX, 0);
-      return constrain((int16_t)m, -OUT_MAX, 0);
-    }
-    else
-    {
-      long m = map(v, CENTER + DB, IN_MAX, 0, OUT_MAX);
-      return constrain((int16_t)m, 0, OUT_MAX);
-    }
-  };
-
-  int16_t thr = mapAxis(rawThr);
-  int16_t str = mapAxis(rawStr);
+  thr = constrain(thr, -1.0f, 1.0f);
+  str = constrain(str, -1.0f, 1.0f);
 
   // ==================================================
-  // ZERO THROTTLE HARD STOP
+  // EXPO (สำคัญมาก)
   // ==================================================
-  if (abs(thr) < 40)
+  thr = applyExpo(thr, 0.4f);  // throttle นุ่ม
+  str = applyExpo(str, 0.5f);  // เลี้ยวนุ่มกว่า
+
+  // ==================================================
+  // LOW SPEED STEER REDUCTION
+  // ==================================================
+  float absThr = fabs(thr);
+
+  if (absThr < 0.4f)
   {
-    targetL = 0;
-    targetR = 0;
-    return;
+    float scale = absThr / 0.4f;
+    str *= scale;
   }
 
   // ==================================================
-  // LOW SPEED STEER SMOOTH
+  // MIX (ARC DRIVE)
   // ==================================================
-  int16_t absThr = abs(thr);
+  float arcL = thr + str;
+  float arcR = thr - str;
 
-  if (absThr < 200)
+  // normalize
+  float maxMag = max(fabs(arcL), fabs(arcR));
+  if (maxMag > 1.0f)
   {
-    float scale = absThr / 200.0f;
-    str = str * scale;
+    arcL /= maxMag;
+    arcR /= maxMag;
   }
 
   // ==================================================
-  // MIXING
+  // SCALE TO PWM
   // ==================================================
-  int32_t arcL = thr + str;
-  int32_t arcR = thr - str;
+  int16_t outL = arcL * PWM_TOP;
+  int16_t outR = arcR * PWM_TOP;
 
-  arcL = constrain(arcL, -PWM_TOP, PWM_TOP);
-  arcR = constrain(arcR, -PWM_TOP, PWM_TOP);
-
-  int32_t maxMag = max(abs(arcL), abs(arcR));
-
-  if (maxMag > PWM_TOP)
+  // ==================================================
+  // SOFT ZERO (กัน jerk)
+  // ==================================================
+  if (fabs(thr) < 0.05f)
   {
-    arcL = (arcL * PWM_TOP) / maxMag;
-    arcR = (arcR * PWM_TOP) / maxMag;
+    outL = 0;
+    outR = 0;
   }
 
   // ==================================================
   // OUTPUT
   // ==================================================
-  targetL = constrain(arcL, -PWM_TOP, PWM_TOP);
-  targetR = constrain(arcR, -PWM_TOP, PWM_TOP);
+  targetL = constrain(outL, -PWM_TOP, PWM_TOP);
+  targetR = constrain(outR, -PWM_TOP, PWM_TOP);
 }
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// MotorOutput.cpp (CLEAN + CONSISTENT + SAFE)
+// MotorOutput.cpp (FIXED - SAFE + NO BUG + PID COMPATIBLE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -11,7 +11,7 @@
 #include "MotorDriver.h"
 
 // ======================================================
-// H-BRIDGE MACRO (ต้องอยู่ก่อนใช้)
+// H-BRIDGE MACRO
 // ======================================================
 
 #define HBRIDGE_L_OFF() (PORTA &= ~0b00000011)
@@ -26,8 +26,10 @@
 // MAIN OUTPUT FUNCTION
 // ============================================================================
 
-void outputMotorPWM() {
-  enum MotorState {
+void outputMotorPWM()
+{
+  enum MotorState
+  {
     RUN,
     DEADTIME,
     SET_DIR,
@@ -40,50 +42,42 @@ void outputMotorPWM() {
   static uint32_t timerL = 0;
   static uint32_t timerR = 0;
 
-  static int16_t pwmOutL = 0;
-  static int16_t pwmOutR = 0;
-
   constexpr uint16_t DIR_DEADTIME_US = 1200;
   constexpr uint16_t PWM_RESUME_DELAY_US = 800;
- 
+
   uint32_t now = micros();
+
+  // ==================================================
+  // 🔴 CLAMP INPUT (จาก PID)
+  // ==================================================
+  curL = constrain(curL, -PWM_TOP, PWM_TOP);
+  curR = constrain(curR, -PWM_TOP, PWM_TOP);
 
   int8_t dirL = (curL > 0) ? 1 : (curL < 0 ? -1 : 0);
   int8_t dirR = (curR > 0) ? 1 : (curR < 0 ? -1 : 0);
 
-  int16_t targetL = abs(curL);
-  int16_t targetR = abs(curR);
+  int16_t pwmL = abs(curL);
+  int16_t pwmR = abs(curR);
 
   // ==================================================
   // LEFT MOTOR
   // ==================================================
 
-  switch (stateL) {
+  switch (stateL)
+  {
     case RUN:
 
-      if (dirL != lastDirL) {
-
+      if (dirL != lastDirL)
+      {
         setPWM_L(0);
         HBRIDGE_L_OFF();
 
         timerL = now;
-        pwmOutL = 0;
-
         stateL = DEADTIME;
         break;
       }
 
-      {
-        {
-          // ใช้ค่าจาก DriveRamp โดยตรง (ห้าม ramp ซ้ำ)
-          pwmOutL = targetL;
-
-          pwmOutL = constrain(pwmOutL, 0, PWM_TOP);
-
-          setPWM_L(pwmOutL);
-        }
-      }
-
+      setPWM_L(pwmL);
       break;
 
     case DEADTIME:
@@ -103,11 +97,10 @@ void outputMotorPWM() {
       else if (dirL < 0) HBRIDGE_L_REV();
       else HBRIDGE_L_OFF();
 
-      timerL = now;
       lastDirL = dirL;
+      timerL = now;
 
       stateL = PWM_DELAY;
-
       break;
 
     case PWM_DELAY:
@@ -124,68 +117,54 @@ void outputMotorPWM() {
   // RIGHT MOTOR
   // ==================================================
 
-  switch (stateR) {
+  switch (stateR)
+  {
     case RUN:
 
-      if (dirR != lastDirR) {
-
+      if (dirR != lastDirR)
+      {
         setPWM_R(0);
         HBRIDGE_R_OFF();
 
         timerR = now;
-        pwmOutR = 0;
-
         stateR = DEADTIME;
         break;
       }
 
-      {
-        {
-          // ใช้ค่าจาก DriveRamp โดยตรง
-          pwmOutR = targetR;
+      setPWM_R(pwmR);
+      break;
 
-          pwmOutR = constrain(pwmOutR, 0, PWM_TOP);
+    case DEADTIME:
 
-          setPWM_R(pwmOutR);
-        }
+      setPWM_R(0);
 
-        break;
+      if (now - timerR >= DIR_DEADTIME_US)
+        stateR = SET_DIR;
 
-        case DEADTIME:
+      break;
 
-          setPWM_R(0);
+    case SET_DIR:
 
-          if (now - timerR >= DIR_DEADTIME_US)
-            stateR = SET_DIR;
+      setPWM_R(0);
 
-          break;
+      if (dirR > 0) HBRIDGE_R_FWD();
+      else if (dirR < 0) HBRIDGE_R_REV();
+      else HBRIDGE_R_OFF();
 
-        case SET_DIR:
+      lastDirR = dirR;
+      timerR = now;
 
-          setPWM_R(0);
+      stateR = PWM_DELAY;
+      break;
 
-          if (dirR > 0) HBRIDGE_R_FWD();
-          else if (dirR < 0) HBRIDGE_R_REV();
-          else HBRIDGE_R_OFF();
+    case PWM_DELAY:
 
-          timerR = now;
-          lastDirR = dirR;
+      setPWM_R(0);
 
-          stateR = PWM_DELAY;
+      if (now - timerR >= PWM_RESUME_DELAY_US)
+        stateR = RUN;
 
-          break;
-
-        case PWM_DELAY:
-
-          setPWM_R(0);
-
-          if (now - timerR >= PWM_RESUME_DELAY_US)
-            stateR = RUN;
-
-          break;
-      }
+      break;
   }
-  }
+}
 
-
-  

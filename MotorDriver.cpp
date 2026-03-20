@@ -1,8 +1,5 @@
 // ============================================================================
-// MotorDriver.cpp (FINAL - FIXED PWM OWNERSHIP + SAFE ISR)
-// - PWM apply ONLY in ISR
-// - No direct OCR write outside ISR
-// - Emergency safe via request buffer
+// MotorDriver.cpp (HARDENED - ATOMIC SAFE + NO GLITCH)
 // ============================================================================
 
 #include <Arduino.h>
@@ -20,7 +17,7 @@
 #endif
 
 // ============================================================================
-// PWM BUFFER (ISR SOURCE OF TRUTH)
+// PWM BUFFER
 // ============================================================================
 volatile uint16_t pwmL_req = 0;
 volatile uint16_t pwmR_req = 0;
@@ -29,42 +26,31 @@ volatile uint16_t fanPwmL_req = 0;
 volatile uint16_t fanPwmR_req = 0;
 
 // ============================================================================
-// PWM SETUP (MOTOR)
+// PWM SETUP
 // ============================================================================
 void setupPWM15K()
 {
-  // RESET TIMER
   TCCR3A = 0;
   TCCR3B = 0;
   TCCR4A = 0;
   TCCR4B = 0;
 
-  // --------------------------------------------------
-  // TIMER3 → LEFT (MASTER)
-  // --------------------------------------------------
   TCCR3A = _BV(COM3A1) | _BV(WGM31);
   TCCR3B = _BV(WGM33) | _BV(WGM32) | _BV(CS30);
   ICR3 = PWM_TOP;
 
-  // midpoint trigger (ADC sync)
   OCR3B = PWM_TOP / 2;
 
-  // --------------------------------------------------
-  // TIMER4 → RIGHT
-  // --------------------------------------------------
   TCCR4A = _BV(COM4A1) | _BV(WGM41);
   TCCR4B = _BV(WGM43) | _BV(WGM42) | _BV(CS40);
   ICR4 = PWM_TOP;
 
-  // --------------------------------------------------
-  // INTERRUPTS
-  // --------------------------------------------------
-  TIMSK3 |= (1 << TOIE3);   // PWM update
-  TIMSK3 |= (1 << OCIE3B);  // ADC midpoint trigger
+  TIMSK3 |= (1 << TOIE3);
+  TIMSK3 |= (1 << OCIE3B);
 }
 
 // ============================================================================
-// PWM SETUP (FAN)
+// FAN PWM
 // ============================================================================
 void setupFanPWM15K()
 {
@@ -78,18 +64,18 @@ void setupFanPWM15K()
 }
 
 // ============================================================================
-// ATOMIC WRITE (SAFE 16-bit)
+// ATOMIC WRITE
 // ============================================================================
 inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
 {
-  uint8_t sreg = SREG;
+  uint8_t s = SREG;
   cli();
   var = value;
-  SREG = sreg;
+  SREG = s;
 }
 
 // ============================================================================
-// SET PWM (REQUEST ONLY → ISR APPLY)
+// SET PWM (REQUEST)
 // ============================================================================
 void setPWM_L(uint16_t v)
 {
@@ -116,14 +102,32 @@ void setFanPWM_R(uint16_t pwm)
 }
 
 // ============================================================================
-// 🔴 PWM APPLY (ONLY PLACE WRITING OCR)
+// 🔴 SAFE READ (ATOMIC SNAPSHOT)
+// ============================================================================
+inline void atomicReadPWM(uint16_t &l, uint16_t &r,
+                          uint16_t &fl, uint16_t &fr)
+{
+  uint8_t s = SREG;
+  cli();
+  l  = pwmL_req;
+  r  = pwmR_req;
+  fl = fanPwmL_req;
+  fr = fanPwmR_req;
+  SREG = s;
+}
+
+// ============================================================================
+// 🔴 PWM APPLY (ONLY OCR WRITE)
 // ============================================================================
 ISR(TIMER3_OVF_vect)
 {
-  uint16_t l  = pwmL_req;
-  uint16_t r  = pwmR_req;
-  uint16_t fl = fanPwmL_req;
-  uint16_t fr = fanPwmR_req;
+  uint16_t l, r, fl, fr;
+
+  atomicReadPWM(l, r, fl, fr);
+
+  // safety clamp (double protection)
+  if (l > PWM_TOP) l = PWM_TOP;
+  if (r > PWM_TOP) r = PWM_TOP;
 
   OCR3A = l;
   OCR4A = r;
@@ -133,7 +137,7 @@ ISR(TIMER3_OVF_vect)
 }
 
 // ============================================================================
-// 🔴 ADC TRIGGER (MIDPOINT CLEAN)
+// ADC TRIGGER
 // ============================================================================
 ISR(TIMER3_COMPB_vect)
 {
@@ -141,15 +145,14 @@ ISR(TIMER3_COMPB_vect)
 }
 
 // ============================================================================
-// DRIVE SAFE (EMERGENCY ONLY)
-// - ห้ามเขียน OCR ตรง
+// DRIVE SAFE (HARD CUT)
 // ============================================================================
 void driveSafe()
 {
-  // ปิด driver ก่อน (ตัดพลังจริง)
+  // ตัดกำลังก่อน
   digitalWrite(PIN_DRV_ENABLE, LOW);
 
-  // request = 0 → ISR จะ apply
+  // clear PWM request
   atomicWrite16(pwmL_req, 0);
   atomicWrite16(pwmR_req, 0);
   atomicWrite16(fanPwmL_req, 0);
@@ -161,12 +164,12 @@ void driveSafe()
   targetL = 0;
   targetR = 0;
 
-  // ปิด H-bridge กัน shoot-through
+  // ปิด H-bridge
   HBRIDGE_ALL_OFF();
 }
 
 // ============================================================================
-// SHORT BRAKE (NO DIRECT PWM WRITE)
+// SHORT BRAKE
 // ============================================================================
 void motorShortBrake()
 {
@@ -175,5 +178,4 @@ void motorShortBrake()
 
   HBRIDGE_ALL_OFF();
 }
-
 

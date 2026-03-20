@@ -1,6 +1,5 @@
 // ============================================================================
-// CommsManager.cpp
-// จัดการระบบสื่อสาร iBUS และ RC watchdog
+// CommsManager.cpp (HARDENED - REAL FRAME + NO FALSE FAULT)
 // ============================================================================
 
 #include <Arduino.h>
@@ -19,75 +18,66 @@
 
 void updateComms(uint32_t now)
 {
-  // ==================================================
-  // IBUS LOST COUNTER
-  // ==================================================
-
   static uint8_t ibusLostCnt = 0;
-
-  // ==================================================
-  // RC HEARTBEAT WATCHDOG
-  // ==================================================
-
   static uint32_t lastFrame_ms = 0;
 
-  constexpr uint16_t RC_FRAME_MAX_INTERVAL = 50;
+  constexpr uint16_t RC_FRAME_MAX_INTERVAL = 60;
 
   // ==================================================
-  // IBUS BYTE PARSING
+  // PARSE IBUS (adaptive budget)
   // ==================================================
 
-  bool gotByte = false;
+  uint8_t available = Serial1.available();
+  uint8_t parseBudget = constrain(available, 8, 64);
 
-  // จำกัดจำนวน byte ต่อ loop เพื่อไม่ให้กิน CPU
-  uint8_t parseBudget = 32;
+  bool frameValid = false;
 
   while (Serial1.available() && parseBudget--)
   {
     ibus.loop();
 
     lastIbusByte_ms = now;
-    gotByte = true;
+
+    // 🔴 ใช้ channel validity เป็น frame indicator
+    uint16_t test = ibus.readChannel(CH_THROTTLE);
+
+    if (test >= 900 && test <= 2100)
+      frameValid = true;
   }
 
   // ==================================================
-  // FRAME HEARTBEAT UPDATE
+  // FRAME HEARTBEAT (VALID ONLY)
   // ==================================================
 
-  if (gotByte)
+  if (frameValid)
   {
     lastFrame_ms = now;
   }
 
   // ==================================================
-  // RC HEARTBEAT TIMEOUT
+  // HEARTBEAT TIMEOUT
   // ==================================================
 
   if (now - lastFrame_ms > RC_FRAME_MAX_INTERVAL)
   {
-
 #if DEBUG_SERIAL
     Serial.println(F("[RC] HEARTBEAT LOST"));
 #endif
-
     latchFault(FaultCode::COMMS_TIMEOUT);
     return;
   }
 
   // ==================================================
-  // RECOVERY : BYTE RETURNS
+  // RECOVERY
   // ==================================================
 
-  if (gotByte)
+  if (frameValid)
   {
-
     if (ibusCommLost)
     {
-
 #if DEBUG_SERIAL
       Serial.println(F("[IBUS] RECOVERED"));
 #endif
-
       requireIbusConfirm = true;
       ibusRecoverStart_ms = now;
     }
@@ -99,27 +89,22 @@ void updateComms(uint32_t now)
   }
 
   // ==================================================
-  // SOFT TIMEOUT
+  // SOFT LOST
   // ==================================================
 
-  if (now - lastIbusByte_ms > 100)
+  if (now - lastIbusByte_ms > 120)
   {
-
     if (++ibusLostCnt >= 3)
     {
-
       if (!ibusCommLost)
       {
-
 #if DEBUG_SERIAL
         Serial.println(F("[IBUS] SOFT LOST"));
 #endif
-
         ibusCommLost = true;
         requireIbusConfirm = true;
       }
     }
-
   }
   else
   {
@@ -127,22 +112,20 @@ void updateComms(uint32_t now)
   }
 
   // ==================================================
-  // HARD TIMEOUT
+  // HARD LOST
   // ==================================================
 
   if (now - lastIbusByte_ms > IBUS_TIMEOUT_MS)
   {
-
 #if DEBUG_SERIAL
     Serial.println(F("[IBUS] HARD LOST -> FAULT"));
 #endif
-
     latchFault(FaultCode::IBUS_LOST);
     return;
   }
 
   // ==================================================
-  // COMMS HEALTHY
+  // HEALTHY
   // ==================================================
 
   if (!ibusCommLost)
@@ -159,16 +142,8 @@ void updateRcCache()
 {
   uint32_t now = millis();
 
-  // ==================================================
-  // IBUS LOST GUARD
-  // ==================================================
-
   if (ibusCommLost)
     return;
-
-  // ==================================================
-  // READ CHANNELS
-  // ==================================================
 
   uint16_t thr = ibus.readChannel(CH_THROTTLE);
   uint16_t str = ibus.readChannel(CH_STEER);
@@ -177,7 +152,7 @@ void updateRcCache()
   uint16_t sta = ibus.readChannel(CH_STARTER);
 
   // ==================================================
-  // PLAUSIBILITY GUARD
+  // PLAUSIBILITY
   // ==================================================
 
   if (thr < 900 || thr > 2100) return;
@@ -187,19 +162,18 @@ void updateRcCache()
   if (sta < 900 || sta > 2100) return;
 
   // ==================================================
-  // RC SPIKE FILTER
-  // ป้องกันค่า RC กระโดดผิดปกติ
+  // SPIKE FILTER
   // ==================================================
 
   static uint16_t lastThr = 1500;
   static uint16_t lastStr = 1500;
 
-  constexpr uint16_t RC_SPIKE_LIMIT = 300;
+  constexpr uint16_t SPIKE = 300;
 
-  if (abs((int)thr - (int)lastThr) > RC_SPIKE_LIMIT)
+  if (abs((int)thr - (int)lastThr) > SPIKE)
     thr = lastThr;
 
-  if (abs((int)str - (int)lastStr) > RC_SPIKE_LIMIT)
+  if (abs((int)str - (int)lastStr) > SPIKE)
     str = lastStr;
 
   // ==================================================
@@ -213,45 +187,32 @@ void updateRcCache()
   rcStarter  = sta;
 
   // ==================================================
-  // RC FREEZE DETECTION
+  // 🔴 FREEZE DETECTION (IMPROVED)
   // ==================================================
 
   static uint32_t lastChange_ms = 0;
 
-  constexpr uint16_t RC_FREEZE_DEADBAND = 4;
-  constexpr uint32_t RC_FREEZE_TIMEOUT_MS = 1500;
+  constexpr uint16_t DB = 4;
+  constexpr uint32_t TIMEOUT = 1500;
 
-  bool changed = false;
-
-  if (abs((int)thr - (int)lastThr) > RC_FREEZE_DEADBAND)
-    changed = true;
-
-  if (abs((int)str - (int)lastStr) > RC_FREEZE_DEADBAND)
-    changed = true;
+  bool changed =
+    abs((int)thr - (int)lastThr) > DB ||
+    abs((int)str - (int)lastStr) > DB ||
+    abs((int)eng - 1500) > 200 ||
+    abs((int)ign - 1500) > 200;
 
   if (changed)
     lastChange_ms = now;
 
-  // update history
   lastThr = thr;
   lastStr = str;
 
-  // ==================================================
-  // FREEZE TIMEOUT
-  // ==================================================
-
-  if (now - lastChange_ms > RC_FREEZE_TIMEOUT_MS)
+  if (now - lastChange_ms > TIMEOUT)
   {
-
 #if DEBUG_SERIAL
     Serial.println(F("[RC] FREEZE DETECTED"));
 #endif
-
     latchFault(FaultCode::COMMS_TIMEOUT);
   }
 }
-
-
-
-
 

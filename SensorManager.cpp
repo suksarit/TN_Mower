@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp (FINAL PRODUCTION - CLEAN + SAFE + NO CONFLICT)
+// SensorManager.cpp (HARDENED - REAL CURRENT + SAFE RECOVERY)
 // ============================================================================
 
 #include <Arduino.h>
@@ -13,9 +13,6 @@
 #include "FaultManager.h"
 #include "SystemTypes.h"
 
-// ======================================================
-// BUILD SAFETY (fallback)
-// ======================================================
 #ifndef BUDGET_SENSORS_MS
 #define BUDGET_SENSORS_MS 5
 #endif
@@ -24,38 +21,26 @@
 #define PHASE_BUDGET_CONFIRM 3
 #endif
 
-// ======================================================
-// CHANNEL MAP
-// ======================================================
 #define CUR_CH_LEFT   0
 #define CUR_CH_RIGHT  1
 
 // ======================================================
-// INTERNAL FILTER STATE
+// FILTER STATE
 // ======================================================
 static float curPrev[4]   = {0};
 static float slopeLPF[4]  = {0};
 static float curFilt[4]   = {0};
 
 // ======================================================
-// ADC SYNC
-// ======================================================
 static volatile uint8_t adcSyncCounter = 0;
 
-// ======================================================
-// SENSOR HEALTH
 // ======================================================
 static uint8_t sensorFailCnt = 0;
 static bool sensorDegraded = false;
 static uint32_t failStart_ms = 0;
 
-// ======================================================
-// I2C TIMER
-// ======================================================
 static uint32_t i2cTimer = 0;
 
-// ======================================================
-// I2C BUS CLEAR
 // ======================================================
 void i2cBusClear()
 {
@@ -74,8 +59,6 @@ void i2cBusClear()
 }
 
 // ======================================================
-// I2C RECOVERY (USE GLOBAL STATE ONLY)
-// ======================================================
 static void updateI2CRecovery(uint32_t now)
 {
   switch (i2cState)
@@ -90,8 +73,7 @@ static void updateI2CRecovery(uint32_t now)
       break;
 
     case I2CRecoverState::BEGIN_BUS:
-      if (now - i2cTimer < 10)
-        return;
+      if (now - i2cTimer < 10) return;
 
       Wire.begin();
       Wire.setClock(100000);
@@ -118,16 +100,12 @@ static void updateI2CRecovery(uint32_t now)
 }
 
 // ======================================================
-// ADC TRIGGER (ISR)
-// ======================================================
 void sensorAdcTrigger()
 {
   if (adcSyncCounter < 255)
     adcSyncCounter++;
 }
 
-// ======================================================
-// CORE ADC PIPELINE
 // ======================================================
 static bool updateADSCurrent()
 {
@@ -156,8 +134,11 @@ static bool updateADSCurrent()
   if (!adsCur.conversionComplete())
   {
     if (now_us - convStart_us > CONV_TIMEOUT_US)
+    {
+      // 🔴 trigger recovery จริง
+      i2cState = I2CRecoverState::END_BUS;
       convRunning = false;
-
+    }
     return false;
   }
 
@@ -171,32 +152,37 @@ static bool updateADSCurrent()
     ((v - g_acsOffsetV[ch]) / ACS_SENS_V_PER_A) -
     currentOffset[ch];
 
-  // SPIKE LIMIT
-  constexpr float MAX_DELTA = 25.0f;
+  // ==================================================
+  // SPIKE LIMIT (strong)
+  // ==================================================
+  constexpr float MAX_DELTA = 20.0f;
+
   float deltaRaw = a - curPrev[ch];
 
   if (fabs(deltaRaw) > MAX_DELTA)
     a = curPrev[ch] + constrain(deltaRaw, -MAX_DELTA, MAX_DELTA);
 
-  // PREDICTIVE FILTER
-  float delta = a - curPrev[ch];
-  slopeLPF[ch] += 0.4f * (delta - slopeLPF[ch]);
+  // ==================================================
+  // FILTER (NO OVERSHOOT)
+  // ==================================================
+  slopeLPF[ch] += 0.3f * ((a - curPrev[ch]) - slopeLPF[ch]);
 
-  float pred = constrain(
-    a + slopeLPF[ch] * 0.7f,
-    0.0f,
-    CUR_MAX_PLAUSIBLE
-  );
+  float pred = a + slopeLPF[ch] * 0.4f;
 
   curPrev[ch] = a;
 
-  // FINAL FILTER
-  if (a >= CUR_MIN_PLAUSIBLE && a <= CUR_MAX_PLAUSIBLE)
-  {
-    float curUse = max(a, pred);
+  float curUse =
+    constrain((a * 0.7f + pred * 0.3f),
+              0.0f,
+              CUR_MAX_PLAUSIBLE);
 
-    curA[ch] += 0.25f * (curUse - curA[ch]);
-    curFilt[ch] = curFilt[ch] * 0.8f + curA[ch] * 0.2f;
+  // ==================================================
+  // MAIN FILTER
+  // ==================================================
+  if (curUse >= CUR_MIN_PLAUSIBLE && curUse <= CUR_MAX_PLAUSIBLE)
+  {
+    curA[ch] += 0.2f * (curUse - curA[ch]);
+    curFilt[ch] = curFilt[ch] * 0.85f + curA[ch] * 0.15f;
 
     if (curUse > CUR_TRIP_A_CH[ch])
     {
@@ -212,7 +198,9 @@ static bool updateADSCurrent()
     }
   }
 
-  // FAILSAFE
+  // ==================================================
+  // FAILSAFE (SOFT DECAY)
+  // ==================================================
   static uint32_t lastUpdate[4] = {0};
   uint32_t now_ms = millis();
 
@@ -221,8 +209,8 @@ static bool updateADSCurrent()
 
   if (now_ms - lastUpdate[ch] > 1000)
   {
-    curA[ch] = 0;
-    curFilt[ch] = 0;
+    curA[ch] *= 0.9f;
+    curFilt[ch] *= 0.9f;
   }
 
   ch = (ch + 1) % 4;
@@ -230,8 +218,6 @@ static bool updateADSCurrent()
   return true;
 }
 
-// ======================================================
-// PUBLIC UPDATE
 // ======================================================
 bool updateSensors()
 {
@@ -257,8 +243,6 @@ bool updateSensors()
 }
 
 // ======================================================
-// CURRENT API
-// ======================================================
 float getMotorCurrentL(void)
 {
   return curFilt[CUR_CH_LEFT];
@@ -272,21 +256,23 @@ float getMotorCurrentR(void)
 float getMotorCurrentSafeL(void)
 {
   float c = getMotorCurrentL();
+
   if (sensorDegraded)
-    c = constrain(c, 0.0f, CUR_WARN_A);
+    c *= 0.7f;   // 🔴 soft limit แทน clamp
+
   return c;
 }
 
 float getMotorCurrentSafeR(void)
 {
   float c = getMotorCurrentR();
+
   if (sensorDegraded)
-    c = constrain(c, 0.0f, CUR_WARN_A);
+    c *= 0.7f;
+
   return c;
 }
 
-// ======================================================
-// SENSOR TASK
 // ======================================================
 void sensorTask(uint32_t now)
 {
@@ -296,7 +282,6 @@ void sensorTask(uint32_t now)
 
   uint32_t dt = micros() - tStart;
 
-  // TIME BUDGET
   static uint8_t budgetCnt = 0;
 
   if (dt > (BUDGET_SENSORS_MS * 1000UL))
@@ -309,14 +294,15 @@ void sensorTask(uint32_t now)
     budgetCnt = 0;
   }
 
-  // I2C RECOVERY
   if (i2cState != I2CRecoverState::IDLE)
   {
     updateI2CRecovery(now);
     return;
   }
 
-  // HEALTH MONITOR
+  // ==================================================
+  // HEALTH
+  // ==================================================
   if (ok)
   {
     failStart_ms = 0;
@@ -343,6 +329,4 @@ void sensorTask(uint32_t now)
       latchFault(FaultCode::VOLT_SENSOR_FAULT);
   }
 }
-
-
 

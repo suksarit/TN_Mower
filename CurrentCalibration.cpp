@@ -1,4 +1,6 @@
-// CurrentCalibration.cpp
+// ============================================================================
+// CurrentCalibration.cpp (HARDENED - STABLE + SAFE OFFSET)
+// ============================================================================
 
 #include <Arduino.h>
 #include "CurrentCalibration.h"
@@ -11,8 +13,11 @@
 constexpr uint8_t CAL_SAMPLE_N = 32;
 constexpr uint16_t CAL_TIMEOUT_MS = 400;
 
-constexpr float REZERO_THRESHOLD_A = 1.5f;   // ต่ำกว่า = ถือว่า idle
-constexpr float REZERO_ALPHA = 0.02f;        // smoothing
+// ต้องนิ่งจริงก่อนนับ sample
+constexpr float CAL_STABLE_THRESHOLD_A = 1.0f;
+
+constexpr float REZERO_THRESHOLD_A = 1.2f;
+constexpr float REZERO_ALPHA = 0.01f;   // 🔴 ลดลง กัน drift
 
 // ======================================================
 // INTERNAL STATE
@@ -24,9 +29,26 @@ static uint32_t calStart_ms = 0;
 static bool calDone = false;
 
 // ======================================================
-// NON-BLOCKING CALIBRATION
-// เรียกจาก updateSystemState()
+// RESET (เรียกตอน boot หรือ fault)
 // ======================================================
+
+void resetCurrentCalibration()
+{
+  calCount = 0;
+  calStart_ms = 0;
+  calDone = false;
+
+  for (uint8_t i = 0; i < 4; i++)
+  {
+    calAccum[i] = 0;
+    currentOffset[i] = 0;
+  }
+}
+
+// ======================================================
+// NON-BLOCKING CALIBRATION
+// ======================================================
+
 bool calibrateCurrentOffsetNonBlocking(uint32_t now)
 {
   if (calDone) return true;
@@ -41,7 +63,25 @@ bool calibrateCurrentOffsetNonBlocking(uint32_t now)
     return true;
   }
 
-  // อ่านค่าปัจจุบัน (จาก SensorManager)
+  // ==================================================
+  // 🔴 ต้องนิ่งจริงก่อนนับ
+  // ==================================================
+  for (uint8_t i = 0; i < 4; i++)
+  {
+    if (fabs(curA[i]) > CAL_STABLE_THRESHOLD_A)
+    {
+      calCount = 0;
+
+      for (uint8_t j = 0; j < 4; j++)
+        calAccum[j] = 0;
+
+      return false;
+    }
+  }
+
+  // ==================================================
+  // SAMPLE
+  // ==================================================
   for (uint8_t i = 0; i < 4; i++)
   {
     calAccum[i] += curA[i];
@@ -69,20 +109,24 @@ bool calibrateCurrentOffsetNonBlocking(uint32_t now)
 }
 
 // ======================================================
-// IDLE AUTO RE-ZERO
-// เรียกจาก taskDriveEvents()
+// IDLE AUTO RE-ZERO (SAFE)
 // ======================================================
+
 void idleCurrentAutoRezero(uint32_t now)
 {
-  // ต้องอยู่ในสถานะที่รถไม่วิ่ง
-  if (abs((int)rcThrottle - 1500) > 50)
+  // ต้อง idle จริง (ทั้ง throttle + output)
+  if (abs((int)rcThrottle - 1500) > 40)
+    return;
+
+  if (abs(curL) > 20 || abs(curR) > 20)
     return;
 
   for (uint8_t i = 0; i < 4; i++)
   {
     float err = curA[i] - currentOffset[i];
 
-    if (abs(err) < REZERO_THRESHOLD_A)
+    // 🔴 ต้องใกล้จริง และไม่ drift
+    if (fabs(err) < REZERO_THRESHOLD_A)
     {
       currentOffset[i] =
         currentOffset[i] * (1.0f - REZERO_ALPHA) +
@@ -90,6 +134,4 @@ void idleCurrentAutoRezero(uint32_t now)
     }
   }
 }
-
-
 

@@ -106,3 +106,4 @@ inline void resetDriveProtectionState()
   stallStartTime = 0;
   stuckStartTime = 0;
 }
+
