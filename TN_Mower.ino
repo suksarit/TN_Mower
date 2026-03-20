@@ -304,67 +304,59 @@ void setupControlTimer()
 }
 
 
-bool driveSafetyGuard() {
-
-  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED) {
-
-    driveSafe();
-
+bool driveSafetyGuard()
+{
+  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED)
+  {
+    // 🔴 ห้ามแตะ PWM
     return false;
   }
 
   bool thrNeutral = neutral(rcThrottle);
   bool strNeutral = neutral(rcSteer);
 
-  if (driverRearmRequired) {
-
+  if (driverRearmRequired)
+  {
     if (thrNeutral && strNeutral)
       driverRearmRequired = false;
 
     return false;
   }
+
   return true;
 }
 
-
-
-void handleFaultImmediateCut() {
+void handleFaultImmediateCut()
+{
 #if DEBUG_SERIAL
   static bool printed = false;
   if (!printed) {
-    Serial.println(F("[FAULT] IMMEDIATE CUT"));
+    Serial.println(F("[FAULT] HARD KILL"));
     printed = true;
   }
 #endif
 
   // --------------------------------------------------
-  // 1) DISABLE DRIVER POWER
+  // 🔴 1) ตัดไฟไดรเวอร์ (ของจริง)
   // --------------------------------------------------
   digitalWrite(PIN_DRV_ENABLE, LOW);
 
   // --------------------------------------------------
-  // 2) CUT DRIVE OUTPUT
+  // 🔴 2) ห้ามแตะ curL / PWM
+  // (ปล่อยให้ applyDrive จัดการ)
   // --------------------------------------------------
-  curL = 0;
-  curR = 0;
-  targetL = 0;
-  targetR = 0;
-
-  // ใช้ driveSafe เฉพาะ kill จริง
-  driveSafe();
 
   // --------------------------------------------------
-  // 3) CUT BLADE THROTTLE
+  // 🔴 3) ตัดใบมีด (อันนี้ถูกแล้ว)
   // --------------------------------------------------
   bladeServo.writeMicroseconds(1000);
 
   // --------------------------------------------------
-  // 4) CUT STARTER
+  // 🔴 4) ตัด starter
   // --------------------------------------------------
   starterActive = false;
   digitalWrite(RELAY_STARTER, LOW);
 }
-
 
 void updateSystemState(uint32_t now) {
   static uint32_t ibusStableStart_ms = 0;
@@ -538,14 +530,23 @@ void taskSafety(uint32_t now)
 
 bool taskSystemGate(uint32_t now, uint32_t loopStart_us)
 {
-  bool emergencyActive =
-    (systemState == SystemState::FAULT) ||
-    (getDriveSafety() == SafetyState::EMERGENCY);
-
-  if (systemState != SystemState::ACTIVE || emergencyActive)
+  // 🔴 HARD KILL PRIORITY สูงสุด
+  if (killRequest == KillType::HARD)
   {
     handleFaultImmediateCut();
 
+#if TELEMETRY_CSV
+    telemetryCSV(now, loopStart_us);
+#endif
+
+    digitalWrite(PIN_HW_WD_HB,
+                 !digitalRead(PIN_HW_WD_HB));
+
+    return false;
+  }
+
+  if (systemState != SystemState::ACTIVE)
+  {
     digitalWrite(PIN_DRV_ENABLE, LOW);
 
 #if TELEMETRY_CSV
@@ -695,30 +696,27 @@ void taskBackground(uint32_t now)
   backgroundFaultEEPROMTask(now);
 }
 
-void runControlLoop(uint32_t now, uint32_t loopStart_us) {
+void runControlLoop(uint32_t now, uint32_t loopStart_us)
+{
   // ==================================================
-  // 🔴 FIX 1: USE FIXED DT (DETERMINISTIC CONTROL)
+  // FIX 1: FIXED DT (DETERMINISTIC)
   // ==================================================
-  // CONTROL LOOP = 20ms (50Hz)
   controlDt_s = 0.02f;
 
   // ==================================================
-  // 🔴 FIX 2: HARD SAFETY GUARD (BEFORE ANY CONTROL)
+  // FIX 2: SAFETY GUARD (ก่อนทุกอย่าง)
   // ==================================================
-  // กันกรณี FAULT / LOCK / ยังไม่ rearm
-  if (!driveSafetyGuard()) {
-
-    // force zero output (ISR buffer)
+  if (!driveSafetyGuard())
+  {
     driveBufISR.targetL = 0;
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
-
     return;
   }
 
   // ==================================================
-  // STAGE 1: UPDATE TARGET FROM RC
+  // STAGE 1: READ INPUT → TARGET
   // ==================================================
   updateDriveTarget();
 
@@ -726,45 +724,41 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   driveBufISR.targetR = targetR;
 
   // ==================================================
-  // 🔴 FIX 3: SYSTEM STATE GUARD (DOUBLE LAYER SAFETY)
+  // FIX 3: SYSTEM STATE GUARD
   // ==================================================
-  if (systemState != SystemState::ACTIVE) {
-
-    driveSafe();  // ตัด PWM ทันที
-
+  if (systemState != SystemState::ACTIVE)
+  {
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
-
     return;
   }
 
   // ==================================================
-  // STAGE 2: DRIVE STATE + CONTROL
+  // STAGE 2: DRIVE LOGIC (event / protection)
   // ==================================================
   runDrive(now);
 
   // ==================================================
-  // 🔴 FIX 4: FINAL GUARD BEFORE OUTPUT (CRITICAL)
+  // FIX 4: FINAL GUARD
   // ==================================================
-  if (systemState != SystemState::ACTIVE || driveState == DriveState::LOCKED) {
-
-    driveSafe();
-
-    driveBufISR.curL = 0;
-    driveBufISR.curR = 0;
-
+  if (systemState != SystemState::ACTIVE ||
+      driveState == DriveState::LOCKED)
+  {
     return;
   }
 
+  // ==================================================
+  // STAGE 3: APPLY DRIVE (OWNER OF PWM)
+  // ==================================================
   applyDrive(now);
 
   // ==================================================
-  // 🔴 FIX 5: WATCHDOG FEED (REAL-TIME DOMAIN)
+  // FIX 5: WATCHDOG UPDATE
   // ==================================================
   wdDrive.lastUpdate_ms = now;
 
   // ==================================================
-  // UPDATE FEEDBACK BUFFER
+  // FEEDBACK BUFFER
   // ==================================================
   driveBufISR.curL = curL;
   driveBufISR.curR = curR;

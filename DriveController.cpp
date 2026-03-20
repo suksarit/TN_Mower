@@ -49,10 +49,8 @@ void applyDrive(uint32_t now) {
   // ==================================================
   // HARD FAULT
   // ==================================================
-  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED) {
+  if (systemState == SystemState::FAULT) {
     forceDriveSoftStop(now);
-    curL = 0;
-    curR = 0;
     return;
   }
 
@@ -115,8 +113,7 @@ void applyDrive(uint32_t now) {
   if (s == SafetyState::LIMP) {
     finalTargetL *= 0.4f;
     finalTargetR *= 0.4f;
-  }
-  else if (s == SafetyState::WARN) {
+  } else if (s == SafetyState::WARN) {
     finalTargetL *= 0.7f;
     finalTargetR *= 0.7f;
   }
@@ -181,7 +178,7 @@ void applyDrive(uint32_t now) {
   // 🔴 CURRENT LIMIT ADAPTIVE (เพิ่ม)
   // ==================================================
   const float CUR_LIMIT = 30.0f;
-  const float CUR_HARD  = 50.0f;
+  const float CUR_HARD = 50.0f;
 
   if (curA_L > CUR_LIMIT) {
     float scale = CUR_LIMIT / curA_L;
@@ -207,14 +204,21 @@ void applyDrive(uint32_t now) {
   // ==================================================
   // FINAL HARD SAFETY
   // ==================================================
-  if (systemState != SystemState::ACTIVE ||
-      driveState == DriveState::LOCKED ||
-      driverState != DriverState::ACTIVE) {
-    curL = 0;
-    curR = 0;
-
-    driveSafe();
+  if (systemState != SystemState::ACTIVE || driverState != DriverState::ACTIVE) {
+    forceDriveSoftStop(now);
     return;
+  }
+
+  // ==================================================
+  // 🔴 KILL HANDLING (NEW)
+  // ==================================================
+  if (killRequest == KillType::HARD) {
+    // HARD → ไม่คุม PWM แล้ว
+    return;
+  }
+
+  if (killRequest == KillType::SOFT) {
+    forceDriveSoftStop(now);
   }
 
   // ==================================================
@@ -259,4 +263,3 @@ void forceDriveSoftStop(uint32_t now) {
 bool driveCommandZero() {
   return (abs(targetL) < 10 && abs(targetR) < 10);
 }
-

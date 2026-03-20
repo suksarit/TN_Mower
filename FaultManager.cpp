@@ -245,13 +245,15 @@ void latchFault(FaultCode code)
   FaultSeverity sev = getFaultSeverity(code);
 
   if (sev == FaultSeverity::LIMP)
-  {
-    forceSafetyState(SafetyState::LIMP);
-  }
-  else if (sev == FaultSeverity::FAULT)
-  {
-    forceSafetyState(SafetyState::EMERGENCY);
-  }
+{
+  killRequest = KillType::SOFT;
+  forceSafetyState(SafetyState::LIMP);
+}
+else if (sev == FaultSeverity::FAULT)
+{
+  killRequest = KillType::HARD;
+  forceSafetyState(SafetyState::EMERGENCY);
+}
 
 #if DEBUG_SERIAL
   Serial.print(F("[FAULT] LATCH: "));
@@ -401,3 +403,5 @@ void backgroundFaultEEPROMTask(uint32_t now)
 
   (void)now;
 }
+
+

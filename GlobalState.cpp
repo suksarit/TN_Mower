@@ -21,3 +21,4 @@ DriveBuffer driveBufMain = {0,0,0,0};
 float terrainDragAvg = 0.0f;
 float controlDt_s = 0.0f;
 
+KillType killRequest = KillType::NONE;

@@ -22,6 +22,8 @@
 // terrain drag estimator
 extern float terrainDragAvg;
 extern float controlDt_s;
+extern KillType killRequest;
+
 // ======================================================
 // DRIVER STATE ENUM
 // ======================================================
