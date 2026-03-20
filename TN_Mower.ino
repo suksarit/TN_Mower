@@ -70,8 +70,6 @@ void applyDriveLimits(float &finalTargetL, float &finalTargetR, float curA_L, fl
 void updateDriveRamp(float finalTargetL, float finalTargetR);
 void outputMotorPWM();
 
-
-
 // ----- MAX31865 (PT100) -----
 constexpr uint8_t MAX_CS_L = 49;
 constexpr uint8_t MAX_CS_R = 48;
@@ -453,10 +451,6 @@ void updateSystemState(uint32_t now) {
       break;
   }
 }
-
-
-
-
 
 void taskComms(uint32_t now) {
   uint32_t tComms_us = micros();
@@ -967,7 +961,6 @@ void setup()
   wdt_enable(WDTO_1S);
 }
 
-
 void loop()
 {
   uint32_t loopStart_us = micros();
@@ -1028,8 +1021,6 @@ void loop()
   taskComms(now);
   sensorTask(now);
 
-  // ❌ เอา monitorSubsystemWatchdogs ออกจากตรงนี้
-
   processFaultReset(now);
 
   taskDriveEvents(now);
@@ -1051,7 +1042,7 @@ void loop()
   // --------------------------------------------------
   // BACKGROUND / SUPERVISOR
   // --------------------------------------------------
-  taskBackground(now);   // ✔ watchdog อยู่ในนี้ที่เดียวพอ
+  taskBackground(now);   
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
