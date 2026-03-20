@@ -1,5 +1,5 @@
 // ========================================================================================
-// SystemTypes.h  (FINAL - PRODUCTION SAFE / EXTENDABLE / EEPROM SAFE)
+// SystemTypes.h  (FINAL - PRODUCTION SAFE / EXTENDABLE / EEPROM HARD SAFE)
 // ========================================================================================
 
 #ifndef SYSTEM_TYPES_H
@@ -19,9 +19,7 @@ enum class SafetyState : uint8_t {
 };
 
 // ============================================================================
-// DRIVE EVENT
-// ⚠️ ห้ามเปลี่ยนค่าของตัวเดิม (EEPROM / LOG)
-// เพิ่มใหม่ต้อง "ต่อท้าย" เท่านั้น
+// DRIVE EVENT (EEPROM SAFE - APPEND ONLY)
 // ============================================================================
 enum class DriveEvent : uint8_t {
   NONE = 0,
@@ -31,22 +29,20 @@ enum class DriveEvent : uint8_t {
   WHEEL_LOCK = 4,
   AUTO_REVERSE = 5,
 
-  // ==================================================
-  // 🔴 เพิ่มของเดิมที่คุณมี
-  // ==================================================
-  WHEEL_STUCK = 6,        // ติดหล่ม (recoverable)
-  TRACTION_LOSS = 7,      // ล้อฟรี (slip)
+  WHEEL_STUCK = 6,
+  TRACTION_LOSS = 7,
 
-  // ==================================================
-  // 🔥 เพิ่ม production (ต่อท้ายเท่านั้น)
-  // ==================================================
-  STALL = 8,              // มอเตอร์เริ่ม stall (soft protection)
-  STUCK = 9,              // stuck แบบรวม (ไม่แยกฝั่ง)
-  LOAD_HIGH = 10,         // โหลดสูง (หญ้าหนา)
-  LOAD_SPIKE = 11,        // โหลดพุ่งเร็วผิดปกติ
-  CURRENT_LIMIT = 12,     // ถูกจำกัดด้วย current
-  SAFETY_LIMIT = 13,      // ถูกจำกัดด้วย safety
-  THERMAL_LIMIT = 14,     // จำกัดเพราะความร้อน
+  STALL = 8,
+  STUCK = 9,
+  LOAD_HIGH = 10,
+  LOAD_SPIKE = 11,
+  CURRENT_LIMIT = 12,
+  SAFETY_LIMIT = 13,
+  THERMAL_LIMIT = 14,
+
+  // 🔴 reserve future space (กันพัง EEPROM)
+  RESERVED_15 = 15,
+  RESERVED_16 = 16,
 
   _COUNT
 };
@@ -85,8 +81,7 @@ enum class BladeState : uint8_t {
 };
 
 // ============================================================================
-// FAULT CODE (EXTENDABLE / EEPROM SAFE)
-// ⚠️ ห้ามสลับลำดับ
+// FAULT CODE (EEPROM SAFE - DO NOT REORDER)
 // ============================================================================
 enum class FaultCode : uint8_t {
   NONE = 0,
@@ -110,6 +105,13 @@ enum class FaultCode : uint8_t {
 
   LOOP_OVERRUN,
   LOW_VOLTAGE_CRITICAL,
+
+  // 🔴 เพิ่ม WARN (จำเป็นสำหรับ FaultSeverity)
+  LOW_VOLTAGE_WARN,
+
+  // 🔴 reserve กันอนาคต
+  RESERVED_1,
+  RESERVED_2,
 
   _COUNT
 };
@@ -139,11 +141,48 @@ enum class ACSCalState : uint8_t {
 };
 
 // ============================================================================
-// ENUM VALIDATION (GENERIC / SAFE)
+// ENUM VALIDATION (SAFE)
 // ============================================================================
 template<typename E>
 inline bool isValidEnum(uint8_t raw) {
   return raw < static_cast<uint8_t>(E::_COUNT);
 }
 
+// ============================================================================
+// DEBUG STRING HELPERS (สำคัญมากสำหรับ debug)
+// ============================================================================
+
+inline const char* safetyStateToString(SafetyState s)
+{
+  switch (s)
+  {
+    case SafetyState::SAFE: return "SAFE";
+    case SafetyState::WARN: return "WARN";
+    case SafetyState::LIMP: return "LIMP";
+    case SafetyState::EMERGENCY: return "EMERGENCY";
+    default: return "UNKNOWN";
+  }
+}
+
+inline const char* faultCodeToString(FaultCode f)
+{
+  switch (f)
+  {
+    case FaultCode::NONE: return "NONE";
+    case FaultCode::IBUS_LOST: return "IBUS_LOST";
+    case FaultCode::COMMS_TIMEOUT: return "COMMS_TIMEOUT";
+    case FaultCode::SENSOR_TIMEOUT: return "SENSOR_TIMEOUT";
+    case FaultCode::LOGIC_WATCHDOG: return "LOGIC_WATCHDOG";
+    case FaultCode::OVER_CURRENT: return "OVER_CURRENT";
+    case FaultCode::OVER_TEMP: return "OVER_TEMP";
+    case FaultCode::DRIVE_TIMEOUT: return "DRIVE_TIMEOUT";
+    case FaultCode::BLADE_TIMEOUT: return "BLADE_TIMEOUT";
+    case FaultCode::LOOP_OVERRUN: return "LOOP_OVERRUN";
+    case FaultCode::LOW_VOLTAGE_CRITICAL: return "LOW_VOLTAGE_CRITICAL";
+    case FaultCode::LOW_VOLTAGE_WARN: return "LOW_VOLTAGE_WARN";
+    default: return "UNKNOWN";
+  }
+}
+
 #endif
+

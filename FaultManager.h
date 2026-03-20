@@ -11,6 +11,7 @@
 void initFaultSystem();
 void latchFault(FaultCode code);
 void clearFault(void);
+void backgroundFaultEEPROMTask(uint32_t now);
 
 // ================= WATCHDOG =================
 void monitorSubsystemWatchdogs(uint32_t now);

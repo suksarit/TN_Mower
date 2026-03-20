@@ -26,6 +26,7 @@
 // ============================================================================
 
 void applyDrive(uint32_t now) {
+
   // ==================================================
   // RESET EVENT
   // ==================================================
@@ -107,6 +108,20 @@ void applyDrive(uint32_t now) {
   finalTargetR *= powerScale;
 
   // ==================================================
+  // 🔴 SAFETY SCALE (เพิ่ม)
+  // ==================================================
+  SafetyState s = getDriveSafety();
+
+  if (s == SafetyState::LIMP) {
+    finalTargetL *= 0.4f;
+    finalTargetR *= 0.4f;
+  }
+  else if (s == SafetyState::WARN) {
+    finalTargetL *= 0.7f;
+    finalTargetR *= 0.7f;
+  }
+
+  // ==================================================
   // DRIVE LIMITS
   // ==================================================
   applyDriveLimits(finalTargetL, finalTargetR, curA_L, curA_R);
@@ -138,7 +153,7 @@ void applyDrive(uint32_t now) {
   finalTargetR = constrain(finalTargetR, -PWM_TOP, PWM_TOP);
 
   // ==================================================
-  // RAMP (smooth command)
+  // RAMP
   // ==================================================
   updateDriveRamp(finalTargetL, finalTargetR);
 
@@ -149,7 +164,7 @@ void applyDrive(uint32_t now) {
   float targetCurrentR = finalTargetR * 0.02f;
 
   // ==================================================
-  // 🔴 TRACTION CONTROL (เพิ่มตรงนี้)
+  // TRACTION CONTROL
   // ==================================================
   applyTractionControl(
     targetCurrentL,
@@ -158,14 +173,43 @@ void applyDrive(uint32_t now) {
     curA_R);
 
   // ==================================================
-  // 🔴 CURRENT PID (FINAL CONTROL)
+  // CURRENT PID
   // ==================================================
   applyCurrentPID(targetCurrentL, targetCurrentR);
 
   // ==================================================
-  // FINAL HARD SAFETY (single point)
+  // 🔴 CURRENT LIMIT ADAPTIVE (เพิ่ม)
   // ==================================================
-  if (systemState != SystemState::ACTIVE || driveState == DriveState::LOCKED || driverState != DriverState::ACTIVE) {
+  const float CUR_LIMIT = 30.0f;
+  const float CUR_HARD  = 50.0f;
+
+  if (curA_L > CUR_LIMIT) {
+    float scale = CUR_LIMIT / curA_L;
+    curL *= scale;
+  }
+
+  if (curA_R > CUR_LIMIT) {
+    float scale = CUR_LIMIT / curA_R;
+    curR *= scale;
+  }
+
+  if (curA_L > CUR_HARD) curL = 0;
+  if (curA_R > CUR_HARD) curR = 0;
+
+  // ==================================================
+  // 🔴 EMERGENCY SOFT STOP (เพิ่ม)
+  // ==================================================
+  if (s == SafetyState::EMERGENCY) {
+    forceDriveSoftStop(now);
+    return;
+  }
+
+  // ==================================================
+  // FINAL HARD SAFETY
+  // ==================================================
+  if (systemState != SystemState::ACTIVE ||
+      driveState == DriveState::LOCKED ||
+      driverState != DriverState::ACTIVE) {
     curL = 0;
     curR = 0;
 

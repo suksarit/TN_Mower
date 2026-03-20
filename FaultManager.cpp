@@ -1,10 +1,10 @@
 // ============================================================================
-// FaultManager.cpp (FULL SYSTEM - FIXED COMPLETE VERSION)
+// FaultManager.cpp (FIXED - COMPILE SAFE + MATCH SYSTEM TYPES)
 // ============================================================================
 
 #include <Arduino.h>
 #include <EEPROM.h>
-#include <string.h>   // ✅ FIX: สำหรับ memset
+#include <string.h>
 
 #include "SystemTypes.h"
 #include "GlobalState.h"
@@ -21,6 +21,41 @@
 
 #define EEPROM_BASE_A   100
 #define EEPROM_BASE_B   400
+
+#define EEPROM_SAVE_DIVIDER 5
+
+constexpr uint16_t WD_GRACE_MS = 120;
+constexpr uint8_t  WD_CONFIRM_CNT = 3;
+
+// ======================================================
+// FAULT SEVERITY
+// ======================================================
+
+enum class FaultSeverity : uint8_t
+{
+  NONE = 0,
+  LIMP,
+  FAULT
+};
+
+// 🔴 FIX: ฟังก์ชันต้องมีชื่อ + type ครบ
+static FaultSeverity getFaultSeverity(FaultCode code)
+{
+  switch (code)
+  {
+    case FaultCode::LOW_VOLTAGE_CRITICAL:
+    case FaultCode::IBUS_LOST:
+    case FaultCode::DRIVE_TIMEOUT:
+    case FaultCode::BLADE_TIMEOUT:
+      return FaultSeverity::FAULT;
+
+    case FaultCode::SENSOR_TIMEOUT:
+      return FaultSeverity::LIMP;
+
+    default:
+      return FaultSeverity::NONE;
+  }
+}
 
 // ======================================================
 // STRUCT
@@ -51,7 +86,7 @@ static uint8_t crc8(const uint8_t* data, uint16_t len)
 }
 
 // ======================================================
-// STORAGE STATE
+// STORAGE
 // ======================================================
 
 static FaultBlock currentBlock;
@@ -59,7 +94,7 @@ static bool useSlotA = true;
 static uint16_t faultCounter = 0;
 
 // ======================================================
-// LOAD FROM EEPROM
+// EEPROM LOAD
 // ======================================================
 
 static bool loadBlock(FaultBlock& out)
@@ -77,23 +112,15 @@ static bool loadBlock(FaultBlock& out)
     out = (a.head >= b.head) ? a : b;
     return true;
   }
-  else if (va)
-  {
-    out = a;
-    return true;
-  }
-  else if (vb)
-  {
-    out = b;
-    return true;
-  }
+  else if (va) return (out = a, true);
+  else if (vb) return (out = b, true);
 
   memset(&out, 0, sizeof(FaultBlock));
   return false;
 }
 
 // ======================================================
-// SAVE TO EEPROM
+// EEPROM SAVE
 // ======================================================
 
 static void saveBlock(FaultBlock& b)
@@ -109,7 +136,7 @@ static void saveBlock(FaultBlock& b)
 }
 
 // ======================================================
-// INIT (เรียกใน setup)
+// INIT
 // ======================================================
 
 void initFaultSystem()
@@ -118,7 +145,7 @@ void initFaultSystem()
 }
 
 // ======================================================
-// ADD LOG (RING BUFFER)
+// LOG
 // ======================================================
 
 static void pushFaultLog(FaultCode code)
@@ -137,14 +164,14 @@ static void pushFaultLog(FaultCode code)
   if (currentBlock.count < FAULT_LOG_SIZE)
     currentBlock.count++;
 
-  saveBlock(currentBlock);
+  static uint8_t saveDivider = 0;
+
+  if (++saveDivider >= EEPROM_SAVE_DIVIDER)
+  {
+    saveBlock(currentBlock);
+    saveDivider = 0;
+  }
 }
-
-// ======================================================
-// DEBOUNCE
-// ======================================================
-
-static uint32_t faultStartTime[MAX_FAULT_CODES] = {0};
 
 // ======================================================
 // PRIORITY
@@ -158,10 +185,17 @@ static uint8_t getFaultPriority(FaultCode code)
     case FaultCode::IBUS_LOST:            return 2;
     case FaultCode::DRIVE_TIMEOUT:        return 3;
     case FaultCode::BLADE_TIMEOUT:        return 3;
+    case FaultCode::SENSOR_TIMEOUT:       return 3;
     case FaultCode::LOGIC_WATCHDOG:       return 5;
     default: return 0;
   }
 }
+
+// ======================================================
+// DEBOUNCE
+// ======================================================
+
+static uint32_t faultStartTime[MAX_FAULT_CODES] = {0};
 
 // ======================================================
 // LATCH FAULT
@@ -176,30 +210,48 @@ void latchFault(FaultCode code)
   if (idx >= MAX_FAULT_CODES)
     return;
 
+  uint32_t now = millis();
+
   if (faultStartTime[idx] == 0)
   {
-    faultStartTime[idx] = millis();
+    faultStartTime[idx] = now;
     return;
   }
 
-  if (millis() - faultStartTime[idx] < 300)
+  if (now - faultStartTime[idx] < 300)
     return;
+
+  if (now - faultStartTime[idx] > 1000)
+  {
+    faultStartTime[idx] = 0;
+    return;
+  }
 
   faultStartTime[idx] = 0;
 
   if (faultLatched && activeFault == code)
     return;
 
-  if (faultLatched)
-  {
-    if (getFaultPriority(code) <= getFaultPriority(activeFault))
-      return;
-  }
+  if (faultLatched &&
+      getFaultPriority(code) <= getFaultPriority(activeFault))
+    return;
 
   pushFaultLog(code);
 
   activeFault = code;
   faultLatched = true;
+
+  // 🔴 APPLY TO SAFETY (FIXED)
+  FaultSeverity sev = getFaultSeverity(code);
+
+  if (sev == FaultSeverity::LIMP)
+  {
+    forceSafetyState(SafetyState::LIMP);
+  }
+  else if (sev == FaultSeverity::FAULT)
+  {
+    forceSafetyState(SafetyState::EMERGENCY);
+  }
 
 #if DEBUG_SERIAL
   Serial.print(F("[FAULT] LATCH: "));
@@ -211,22 +263,52 @@ void latchFault(FaultCode code)
 // WATCHDOG
 // ======================================================
 
-constexpr uint16_t WD_GRACE_MS = 80;
-
 void monitorSubsystemWatchdogs(uint32_t now)
 {
+  static uint8_t commsCnt = 0;
+  static uint8_t driveCnt = 0;
+  static uint8_t bladeCnt = 0;
+  static uint8_t sensorCnt = 0;
+
   if (now - wdComms.lastUpdate_ms > wdComms.timeout_ms + WD_GRACE_MS)
-    latchFault(FaultCode::IBUS_LOST);
+  {
+    if (++commsCnt >= WD_CONFIRM_CNT)
+    {
+      latchFault(FaultCode::IBUS_LOST);
+      commsCnt = WD_CONFIRM_CNT;
+    }
+  } else commsCnt = 0;
 
   if (now - wdDrive.lastUpdate_ms > wdDrive.timeout_ms + WD_GRACE_MS)
-    latchFault(FaultCode::DRIVE_TIMEOUT);
+  {
+    if (++driveCnt >= WD_CONFIRM_CNT)
+    {
+      latchFault(FaultCode::DRIVE_TIMEOUT);
+      driveCnt = WD_CONFIRM_CNT;
+    }
+  } else driveCnt = 0;
 
   if (now - wdBlade.lastUpdate_ms > wdBlade.timeout_ms + WD_GRACE_MS)
-    latchFault(FaultCode::BLADE_TIMEOUT);
+  {
+    if (++bladeCnt >= WD_CONFIRM_CNT)
+    {
+      latchFault(FaultCode::BLADE_TIMEOUT);
+      bladeCnt = WD_CONFIRM_CNT;
+    }
+  } else bladeCnt = 0;
+
+  if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms + WD_GRACE_MS)
+  {
+    if (++sensorCnt >= WD_CONFIRM_CNT)
+    {
+      latchFault(FaultCode::SENSOR_TIMEOUT);
+      sensorCnt = WD_CONFIRM_CNT;
+    }
+  } else sensorCnt = 0;
 }
 
 // ======================================================
-// RESET VIA IGNITION (FIX LINKER ERROR)
+// RESET
 // ======================================================
 
 void processFaultReset(uint32_t now)
@@ -259,27 +341,13 @@ void processFaultReset(uint32_t now)
   if (!ignitionWasOn && ignitionNow)
   {
     if (ignitionOffQualified && allSafe)
-    {
       clearFault();
-    }
 
     ignitionOffQualified = false;
     ignitionOffStart_ms = 0;
   }
 
   ignitionWasOn = ignitionNow;
-}
-
-// ======================================================
-// BACKGROUND TASK (FIX LINKER ERROR)
-// ======================================================
-
-void backgroundFaultEEPROMTask(uint32_t now)
-{
-  // เวอร์ชันนี้เขียน EEPROM ตอนเกิด fault แล้ว
-  // ไม่ต้องทำอะไรใน background
-
-  (void)now;
 }
 
 // ======================================================
@@ -292,12 +360,7 @@ void clearFault()
     return;
 
   if (getFaultPriority(activeFault) >= 4)
-  {
-#if DEBUG_SERIAL
-    Serial.println(F("[FAULT] CLEAR BLOCKED (CRITICAL)"));
-#endif
     return;
-  }
 
   faultLatched = false;
   activeFault = FaultCode::NONE;
@@ -328,3 +391,13 @@ bool shouldStopSystem(void)
   return faultLatched;
 }
 
+// ======================================================
+// BACKGROUND EEPROM TASK (STUB)
+// ======================================================
+void backgroundFaultEEPROMTask(uint32_t now)
+{
+  // 🔴 ตอนนี้ยังไม่ใช้ (เขียนตอน fault เกิดแล้ว)
+  // ใส่ stub กัน linker error
+
+  (void)now;
+}

@@ -282,19 +282,21 @@ int freeRam() {
 #endif
 
 
-void setupControlTimer() {
+void setupControlTimer()
+{
   cli();
 
   TCCR2A = 0;
   TCCR2B = 0;
 
+  // CTC mode
   TCCR2A |= (1 << WGM21);
 
-  // prescaler 64 → 250kHz
-  TCCR2B |= (1 << CS22);
+  // prescaler 1024 → 16MHz / 1024 = 15625 Hz
+  TCCR2B |= (1 << CS22) | (1 << CS21) | (1 << CS20);
 
-  // 1ms → 250 ticks
-  OCR2A = 249;
+  // 🔴 20ms → 312 ticks (15625 * 0.02)
+  OCR2A = 312 - 1;
 
   TIMSK2 |= (1 << OCIE2A);
 
@@ -653,22 +655,33 @@ void taskLoopSupervisor(uint32_t loopStart_us) {
     latchFault(FaultCode::LOOP_OVERRUN);
 }
 
-void taskWatchdog() {
+void taskWatchdog()
+{
   int freeMem = freeRam();
 
-  if (freeMem < 600) {
+  if (freeMem < 600)
+  {
     latchFault(FaultCode::LOGIC_WATCHDOG);
   }
 
   bool wdHealthy =
-    !wdSensor.faulted && !wdComms.faulted && !wdDrive.faulted && !wdBlade.faulted && !faultLatched;
+    !wdSensor.faulted &&
+    !wdComms.faulted &&
+    !wdDrive.faulted &&
+    !wdBlade.faulted &&
+    !faultLatched;
 
-  if (wdHealthy) {
+  // 🔴 เพิ่มเงื่อนไข: system ต้อง ACTIVE เท่านั้น
+  if (wdHealthy && systemState == SystemState::ACTIVE)
+  {
     wdt_reset();
 
     digitalWrite(PIN_HW_WD_HB,
                  !digitalRead(PIN_HW_WD_HB));
-  } else {
+  }
+  else
+  {
+    // 🔴 ไม่ feed → MCU reset
     digitalWrite(PIN_HW_WD_HB, LOW);
   }
 }
@@ -757,154 +770,158 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   driveBufISR.curR = curR;
 }
 
-void setup() {
+void setup()
+{
+  // ==================================================
+  // 🔴 HARD SAFE FIRST (กันพุ่งก่อนทุกอย่าง)
+  // ==================================================
+  cli();
 
+  pinMode(PIN_DRV_ENABLE, OUTPUT);
+  digitalWrite(PIN_DRV_ENABLE, LOW);
+
+  // kill PWM hardware
+  TCCR3A = 0;
+  TCCR3B = 0;
+  TCCR4A = 0;
+  TCCR4B = 0;
+
+  OCR3A = 0;
+  OCR4A = 0;
+
+  // kill H-bridge
+  HBRIDGE_ALL_OFF();
+
+  // reset control state
+  curL = 0;
+  curR = 0;
+  targetL = 0;
+  targetR = 0;
+
+  sei();
+
+  // ==================================================
+  // 🔴 DETECT WDT RESET
+  // ==================================================
+  if (MCUSR & (1 << WDRF))
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[BOOT] WDT RESET"));
+#endif
+    systemState = SystemState::INIT;
+
+    requireIbusConfirm = true;
+    rcNeutralConfirmed = false;
+  }
+
+  MCUSR = 0;
+
+  // ==================================================
+  // TIMER CONTROL LOOP
+  // ==================================================
   setupControlTimer();
-// --------------------------------------------------
-// SERIAL (DEBUG)
-// --------------------------------------------------
+
+  // ==================================================
+  // SERIAL
+  // ==================================================
 #if DEBUG_SERIAL || TELEMETRY_CSV
   Serial.begin(115200);
 #endif
-  // --------------------------------------------------
-  // SERIAL COMMUNICATION
-  // --------------------------------------------------
-  Serial1.begin(115200);  // iBUS
-  Serial2.begin(115200);  // Storm32
 
-  ibus.begin(Serial1);  // iBUS = INPUT ONLY
-  getGimbal().begin();  // Storm32 uses Seria
+  Serial1.begin(115200);
+  Serial2.begin(115200);
 
-  getGimbal().forceOff();  // <<< HARD LOCK getGimbal() at boot
+  ibus.begin(Serial1);
+  getGimbal().begin();
+  getGimbal().forceOff();
 
-  // --------------------------------------------------
+  // ==================================================
   // I2C
-  // --------------------------------------------------
+  // ==================================================
   i2cBusClear();
   Wire.begin();
   Wire.setClock(100000);
   Wire.setWireTimeout(6000, true);
 
-  // --------------------------------------------------
-  // ADS1115 DETECT (ROBUST INIT)
-  // --------------------------------------------------
-
+  // ==================================================
+  // ADS INIT
+  // ==================================================
   adsCurPresent = adsCur.begin(0x48);
-  if (adsCurPresent) {
+  if (adsCurPresent)
+  {
     adsCur.setGain(GAIN_ONE);
     adsCur.setDataRate(RATE_ADS1115_250SPS);
-#if DEBUG_SERIAL
-    Serial.println(F("[BOOT] ADS CUR OK (0x48)"));
-#endif
-  } else {
-#if DEBUG_SERIAL
-    Serial.println(F("[BOOT] ADS CUR NOT FOUND (0x48)"));
-#endif
   }
 
   adsVoltPresent = adsVolt.begin(0x49);
-  if (adsVoltPresent) {
+  if (adsVoltPresent)
+  {
     adsVolt.setGain(GAIN_ONE);
     adsVolt.setDataRate(RATE_ADS1115_250SPS);
-#if DEBUG_SERIAL
-    Serial.println(F("[BOOT] ADS VOLT OK (0x49)"));
-#endif
-  } else {
-#if DEBUG_SERIAL
-    Serial.println(F("[BOOT] ADS VOLT NOT FOUND (0x49)"));
-#endif
   }
 
-  // --------------------------------------------------
-  // READ LAST FAULT FROM EEPROM (FAULT HISTORY)
-  // --------------------------------------------------
-  uint8_t raw;
-  EEPROM.get(100, raw);
-
-  if (!isValidEnum<FaultCode>(raw)) {
-    raw = 0;  // หรือ FaultCode::NONE
-  }
-
-  FaultCode lastFault = static_cast<FaultCode>(raw);
-
-#if DEBUG_SERIAL
-  Serial.print(F("[BOOT] LAST FAULT = "));
-  Serial.println((uint8_t)lastFault);
-#endif
-
-#if TEST_MODE && DEBUG_SERIAL
-  Serial.println();
-  Serial.println(F("==================================="));
-  Serial.println(F("!!! TEST MODE ACTIVE !!!"));
-  Serial.println(F("NO REAL SENSORS / BENCH TEST ONLY"));
-  Serial.println(F("DO NOT USE IN FIELD OPERATION"));
-  Serial.println(F("==================================="));
-#endif
-
-  // --------------------------------------------------
-  // GPIO OUTPUT
-  // --------------------------------------------------
+  // ==================================================
+  // GPIO
+  // ==================================================
   pinMode(PIN_HW_WD_HB, OUTPUT);
-  digitalWrite(PIN_HW_WD_HB, LOW);  // ค่าเริ่มต้น = silent
+  digitalWrite(PIN_HW_WD_HB, LOW);
 
-  pinMode(PIN_DRV_ENABLE, OUTPUT);
-  digitalWrite(PIN_DRV_ENABLE, LOW);  // ❗ default = disable driver
   pinMode(DIR_L1, OUTPUT);
   pinMode(DIR_L2, OUTPUT);
   pinMode(DIR_R1, OUTPUT);
   pinMode(DIR_R2, OUTPUT);
 
-  pinMode(MAX_CS_L, OUTPUT);
-  pinMode(MAX_CS_R, OUTPUT);
-  digitalWrite(MAX_CS_L, HIGH);
-  digitalWrite(MAX_CS_R, HIGH);
   pinMode(PIN_CUR_TRIP, INPUT_PULLUP);
 
   pinMode(PIN_BUZZER, OUTPUT);
   digitalWrite(PIN_BUZZER, LOW);
+
   pinMode(RELAY_WARN, OUTPUT);
   digitalWrite(RELAY_WARN, LOW);
+
   pinMode(RELAY_STARTER, OUTPUT);
   digitalWrite(RELAY_STARTER, LOW);
+
   pinMode(RELAY_IGNITION, OUTPUT);
   digitalWrite(RELAY_IGNITION, LOW);
+
   pinMode(FAN_L, OUTPUT);
   digitalWrite(FAN_L, LOW);
+
   pinMode(FAN_R, OUTPUT);
   digitalWrite(FAN_R, LOW);
 
-  driveSafe();  // <<< HARD motor cut at boot
+  // ==================================================
+  // HARD CUT AGAIN (double safety)
+  // ==================================================
+  driveSafe();
 
-  // --------------------------------------------------
-  // SPI / TEMPERATURE
-  // --------------------------------------------------
-  // SPI / TEMPERATURE
+  // ==================================================
+  // SPI TEMP
+  // ==================================================
 #if !TEST_MODE
   SPI.begin();
   maxL.begin(MAX31865_3WIRE);
   maxR.begin(MAX31865_3WIRE);
-#else
-#if DEBUG_SERIAL
-  Serial.println(F("[BOOT] TEST MODE - PT100 DISABLED"));
-#endif
 #endif
 
-  // --------------------------------------------------
-  // PWM / SERVO
-  // --------------------------------------------------
-  driveSafe();
+  // ==================================================
+  // PWM INIT
+  // ==================================================
   setPWM_L(0);
   setPWM_R(0);
+
   setupPWM15K();
   setupFanPWM15K();
 
   bladeServo.attach(SERVO_ENGINE_PIN);
   bladeServo.writeMicroseconds(1000);
 
-  // --------------------------------------------------
-  // INIT SENSOR / STATE
-  // --------------------------------------------------
-  for (uint8_t i = 0; i < 4; i++) {
+  // ==================================================
+  // INIT STATE
+  // ==================================================
+  for (uint8_t i = 0; i < 4; i++)
+  {
     curA[i] = 0.0f;
     overCurCnt[i] = 0;
   }
@@ -914,15 +931,11 @@ void setup() {
   engineVolt = 0.0f;
 
   systemState = SystemState::INIT;
-  if (!isValidEnum<SystemState>(static_cast<uint8_t>(systemState))) {
-    systemState = SystemState::FAULT;
-  }
   driveState = DriveState::IDLE;
   bladeState = BladeState::IDLE;
 
   faultLatched = false;
   activeFault = FaultCode::NONE;
-
 
   revBlockUntilL = 0;
   revBlockUntilR = 0;
@@ -930,18 +943,15 @@ void setup() {
   driveSoftStopStart_ms = 0;
   bladeSoftStopStart_ms = 0;
 
-  // --------------------------------------------------
-  // MISSING RUNTIME RESET (CRITICAL)
-  // --------------------------------------------------
   engineStopped_ms = 0;
   starterActive = false;
 
   lastIbusByte_ms = millis();
   ibusCommLost = true;
 
-  // --------------------------------------------------
-  // INIT WATCHDOG DOMAINS (CRITICAL: PREVENT BOOT FALSE TRIP)
-  // --------------------------------------------------
+  // ==================================================
+  // WATCHDOG INIT
+  // ==================================================
   {
     uint32_t now = millis();
 
@@ -955,79 +965,84 @@ void setup() {
     wdDrive.faulted = false;
     wdBlade.faulted = false;
   }
-  // --------------------------------------------------
-  // HW WATCHDOG (LAST)
-  // --------------------------------------------------
+
+  // ==================================================
+  // 🔴 START WDT (ท้ายสุดเท่านั้น)
+  // ==================================================
   wdt_reset();
-  wdt_enable(WDTO_1S);
-  MCUSR &= ~(1 << WDRF);
   wdt_enable(WDTO_1S);
 }
 
-void loop() {
-  uint32_t now = millis();
+
+void loop()
+{
   uint32_t loopStart_us = micros();
 
   // --------------------------------------------------
-  // 🔴 REAL-TIME CONTROL (NO MISS + NO RACE)
+  // 🔴 REAL-TIME CONTROL (DETERMINISTIC)
   // --------------------------------------------------
   uint8_t ticksToRun;
 
   // -----------------------------
-  // ATOMIC SNAPSHOT (CRITICAL)
+  // ATOMIC SNAPSHOT
   // -----------------------------
   cli();
   ticksToRun = controlTicks;
   controlTicks = 0;
   sei();
 
-  // -----------------------------
-  // RUN CONTROL LOOP
-  // -----------------------------
-  uint8_t maxCatchup = 3;  // จำกัด backlog
+  // 🔴 FIX 1: DROP BACKLOG ทันที
+  if (ticksToRun > 1)
+  {
+    ticksToRun = 1;
+  }
 
-  while (ticksToRun > 0 && maxCatchup--) {
-    ticksToRun--;
-   
+  // -----------------------------
+  // RUN CONTROL LOOP (1 ครั้งเท่านั้น)
+  // -----------------------------
+  if (ticksToRun == 1)
+  {
     uint32_t ctrlStart = micros();
 
-    // -------------------------
-    // CONTROL LOOP (REAL-TIME)
-    // -------------------------
+    // 🔴 อ่านเวลา "ตอนจะใช้จริง"
     uint32_t ctrlNow = millis();
+
     runControlLoop(ctrlNow, loopStart_us);
 
-    // -------------------------
-    // OVERRUN PROTECTION
-    // -------------------------
     uint32_t ctrlTime = micros() - ctrlStart;
 
-    if (ctrlTime > CONTROL_PERIOD_US) {
+    // 🔴 HARD GUARD
+    if (ctrlTime > CONTROL_PERIOD_US)
+    {
       latchFault(FaultCode::LOOP_OVERRUN);
-      break;
     }
   }
 
   // --------------------------------------------------
-  // 🔴 COPY BUFFER (ทำครั้งเดียวหลัง control)
+  // 🔴 COPY BUFFER (หลัง control เท่านั้น)
   // --------------------------------------------------
   copyDriveBuffer();
+
+  // --------------------------------------------------
+  // 🔴 UPDATE TIME หลัง control (แม่นกว่า)
+  // --------------------------------------------------
+  uint32_t now = millis();
 
   // --------------------------------------------------
   // BACKGROUND TASK (NON REAL-TIME)
   // --------------------------------------------------
   taskComms(now);
-sensorTask(now);
+  sensorTask(now);
 
-// 🔴 ย้ายมาไว้ตรงนี้ (SYSTEM LEVEL)
-monitorSubsystemWatchdogs(now);
-processFaultReset(now);
+  // ❌ เอา monitorSubsystemWatchdogs ออกจากตรงนี้
 
-taskDriveEvents(now);
-taskSafety(now);
+  processFaultReset(now);
+
+  taskDriveEvents(now);
+  taskSafety(now);
 
   // --------------------------------------------------
-  // SYSTEM GATE (FAULT / EMERGENCY)
+  // SYSTEM GATE
   // --------------------------------------------------
   if (!taskSystemGate(now, loopStart_us))
     return;
@@ -1042,10 +1057,9 @@ taskSafety(now);
   // --------------------------------------------------
   // BACKGROUND / SUPERVISOR
   // --------------------------------------------------
-  taskBackground(now);
+  taskBackground(now);   // ✔ watchdog อยู่ในนี้ที่เดียวพอ
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
-
 
 

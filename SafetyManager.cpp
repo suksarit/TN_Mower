@@ -1,15 +1,17 @@
 // ============================================================================
-// SafetyManager.cpp (HARDENED - NO FLAP + EMERGENCY LOCK)
+// SafetyManager.cpp (FINAL - INDUSTRIAL STABLE / NO FLAP / LOCKED STATES)
 // ============================================================================
 
 #include <Arduino.h>
-
 #include "SafetyManager.h"
 
 // ============================================================================
 // INTERNAL STATE
 // ============================================================================
 static SafetyState driveSafetyInternal = SafetyState::SAFE;
+
+// 🔴 EMERGENCY LOCK FLAG (สำคัญมาก)
+static bool emergencyLatched = false;
 
 // ============================================================================
 // HYSTERESIS COUNTERS
@@ -19,6 +21,10 @@ static uint8_t warnConfirmCnt = 0;
 
 static constexpr uint8_t LIMP_CONFIRM_CNT = 3;
 static constexpr uint8_t WARN_CONFIRM_CNT = 2;
+
+// 🔴 HOLD TIME (กันเด้ง)
+static uint32_t limpHoldStart_ms = 0;
+static constexpr uint32_t LIMP_HOLD_TIME_MS = 1500;
 
 // ============================================================================
 // STABILITY TRACKER
@@ -85,9 +91,14 @@ void updateSafetyStability(
   DriveEvent& lastDriveEvent)
 {
   // ==================================================
-  // 🔴 EMERGENCY LOCK (override everything)
+  // 🔴 EMERGENCY LOCK (STICKY)
   // ==================================================
   if (raw == SafetyState::EMERGENCY)
+  {
+    emergencyLatched = true;
+  }
+
+  if (emergencyLatched)
   {
     driveSafetyInternal = SafetyState::EMERGENCY;
 
@@ -103,7 +114,7 @@ void updateSafetyStability(
   SafetyState filtered = driveSafetyInternal;
 
   // ==================================================
-  // HYSTERESIS (NO DOWN-FLAP)
+  // HYSTERESIS
   // ==================================================
   switch (raw)
   {
@@ -114,6 +125,9 @@ void updateSafetyStability(
       {
         filtered = SafetyState::LIMP;
         limpConfirmCnt = LIMP_CONFIRM_CNT;
+
+        // 🔴 start hold timer
+        limpHoldStart_ms = now;
       }
       break;
 
@@ -128,7 +142,6 @@ void updateSafetyStability(
       break;
 
     case SafetyState::SAFE:
-      // 🔴 ไม่ลด state ทันที → ต้องรอ stability
       limpConfirmCnt = 0;
       warnConfirmCnt = 0;
       break;
@@ -138,12 +151,23 @@ void updateSafetyStability(
   }
 
   // ==================================================
+  // 🔴 HOLD LIMP (กันเด้ง)
+  // ==================================================
+  if (driveSafetyInternal == SafetyState::LIMP)
+  {
+    if (now - limpHoldStart_ms < LIMP_HOLD_TIME_MS)
+    {
+      filtered = SafetyState::LIMP;
+    }
+  }
+
+  // ==================================================
   // APPLY STATE
   // ==================================================
   driveSafetyInternal = filtered;
 
   // ==================================================
-  // SAFE STABILITY (STRICT)
+  // SAFE STABILITY
   // ==================================================
   if (raw != SafetyState::SAFE)
   {
@@ -160,7 +184,6 @@ void updateSafetyStability(
       return;
     }
 
-    // 🔴 ต้องนิ่งจริง (ไม่มี event)
     if (now - safeStableStart_ms >= SAFE_STABLE_TIME_MS)
     {
       safetyStability = SafetyStabilityState::SAFE_STABLE;
@@ -185,6 +208,12 @@ SafetyState getDriveSafety()
 void forceSafetyState(SafetyState s)
 {
   driveSafetyInternal = s;
+
+  // 🔴 ถ้า EMERGENCY → lock
+  if (s == SafetyState::EMERGENCY)
+  {
+    emergencyLatched = true;
+  }
 
   limpConfirmCnt = 0;
   warnConfirmCnt = 0;
