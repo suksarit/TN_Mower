@@ -1,5 +1,5 @@
 // ============================================================================
-// FaultManager.cpp (FIXED - COMPILE SAFE + MATCH SYSTEM TYPES)
+// FaultManager.cpp (INDUSTRIAL SAFE - FINAL FIXED)
 // ============================================================================
 
 #include <Arduino.h>
@@ -11,6 +11,8 @@
 #include "HardwareConfig.h"
 #include "FaultManager.h"
 #include "SafetyManager.h"
+
+extern KillType killRequest;
 
 // ======================================================
 // CONFIG
@@ -38,7 +40,6 @@ enum class FaultSeverity : uint8_t
   FAULT
 };
 
-// 🔴 FIX: ฟังก์ชันต้องมีชื่อ + type ครบ
 static FaultSeverity getFaultSeverity(FaultCode code)
 {
   switch (code)
@@ -198,7 +199,7 @@ static uint8_t getFaultPriority(FaultCode code)
 static uint32_t faultStartTime[MAX_FAULT_CODES] = {0};
 
 // ======================================================
-// LATCH FAULT
+// LATCH FAULT (FIXED)
 // ======================================================
 
 void latchFault(FaultCode code)
@@ -241,23 +242,33 @@ void latchFault(FaultCode code)
   activeFault = code;
   faultLatched = true;
 
-  // 🔴 APPLY TO SAFETY (FIXED)
   FaultSeverity sev = getFaultSeverity(code);
 
-  if (sev == FaultSeverity::LIMP)
-{
-  killRequest = KillType::SOFT;
-  forceSafetyState(SafetyState::LIMP);
-}
-else if (sev == FaultSeverity::FAULT)
-{
-  killRequest = KillType::HARD;
-  forceSafetyState(SafetyState::EMERGENCY);
-}
+  if (sev == FaultSeverity::FAULT)
+  {
+    // 🔴 HARD override เสมอ
+    killRequest = KillType::HARD;
+    forceSafetyState(SafetyState::EMERGENCY);
+  }
+  else if (sev == FaultSeverity::LIMP)
+  {
+    // 🔴 ห้าม downgrade HARD
+    if (killRequest != KillType::HARD)
+      killRequest = KillType::SOFT;
+
+    forceSafetyState(SafetyState::LIMP);
+  }
+  else
+  {
+    if (killRequest != KillType::HARD)
+      killRequest = KillType::SOFT;
+  }
 
 #if DEBUG_SERIAL
   Serial.print(F("[FAULT] LATCH: "));
-  Serial.println((uint8_t)code);
+  Serial.print((uint8_t)code);
+  Serial.print(F(" | KILL="));
+  Serial.println((killRequest == KillType::HARD) ? F("HARD") : F("SOFT"));
 #endif
 }
 
@@ -353,7 +364,7 @@ void processFaultReset(uint32_t now)
 }
 
 // ======================================================
-// CLEAR
+// CLEAR (FIX สำคัญ)
 // ======================================================
 
 void clearFault()
@@ -366,6 +377,9 @@ void clearFault()
 
   faultLatched = false;
   activeFault = FaultCode::NONE;
+
+  // 🔴 FIX: reset kill system
+  killRequest = KillType::NONE;
 
   forceSafetyState(SafetyState::SAFE);
 
@@ -394,14 +408,11 @@ bool shouldStopSystem(void)
 }
 
 // ======================================================
-// BACKGROUND EEPROM TASK (STUB)
+// BACKGROUND EEPROM TASK
 // ======================================================
+
 void backgroundFaultEEPROMTask(uint32_t now)
 {
-  // 🔴 ตอนนี้ยังไม่ใช้ (เขียนตอน fault เกิดแล้ว)
-  // ใส่ stub กัน linker error
-
   (void)now;
 }
-
 

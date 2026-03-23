@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp (HARDENED - REAL CURRENT + SAFE RECOVERY)
+// SensorManager.cpp (INDUSTRIAL SAFE - FIXED REAL)
 // ============================================================================
 
 #include <Arduino.h>
@@ -59,6 +59,18 @@ void i2cBusClear()
 }
 
 // ======================================================
+static void resetSensorState()
+{
+  for (uint8_t i = 0; i < 4; i++)
+  {
+    curPrev[i] = 0;
+    slopeLPF[i] = 0;
+    curFilt[i] = 0;
+    curA[i] = 0;
+  }
+}
+
+// ======================================================
 static void updateI2CRecovery(uint32_t now)
 {
   switch (i2cState)
@@ -85,6 +97,8 @@ static void updateI2CRecovery(uint32_t now)
     case I2CRecoverState::REINIT_ADS:
       adsCurPresent  = adsCur.begin(0x48);
       adsVoltPresent = adsVolt.begin(0x49);
+
+      resetSensorState();   // 🔴 FIX สำคัญ
 
 #if DEBUG_SERIAL
       Serial.println(F("[I2C RECOVERY DONE]"));
@@ -116,7 +130,6 @@ static bool updateADSCurrent()
   uint32_t now_us = micros();
   constexpr uint16_t CONV_TIMEOUT_US = 12000;
 
-  // START
   if (!convRunning)
   {
     uint16_t mux =
@@ -130,19 +143,16 @@ static bool updateADSCurrent()
     return false;
   }
 
-  // WAIT
   if (!adsCur.conversionComplete())
   {
     if (now_us - convStart_us > CONV_TIMEOUT_US)
     {
-      // 🔴 trigger recovery จริง
       i2cState = I2CRecoverState::END_BUS;
       convRunning = false;
     }
     return false;
   }
 
-  // READ
   int16_t raw = adsCur.getLastConversionResults();
   convRunning = false;
 
@@ -153,7 +163,7 @@ static bool updateADSCurrent()
     currentOffset[ch];
 
   // ==================================================
-  // SPIKE LIMIT (strong)
+  // SPIKE LIMIT
   // ==================================================
   constexpr float MAX_DELTA = 20.0f;
 
@@ -163,7 +173,7 @@ static bool updateADSCurrent()
     a = curPrev[ch] + constrain(deltaRaw, -MAX_DELTA, MAX_DELTA);
 
   // ==================================================
-  // FILTER (NO OVERSHOOT)
+  // FILTER
   // ==================================================
   slopeLPF[ch] += 0.3f * ((a - curPrev[ch]) - slopeLPF[ch]);
 
@@ -173,20 +183,20 @@ static bool updateADSCurrent()
 
   float curUse =
     constrain((a * 0.7f + pred * 0.3f),
-              0.0f,
+              -CUR_MAX_PLAUSIBLE,   // 🔴 FIX รองรับ reverse
               CUR_MAX_PLAUSIBLE);
 
   // ==================================================
-  // MAIN FILTER
+  // VALID RANGE
   // ==================================================
-  if (curUse >= CUR_MIN_PLAUSIBLE && curUse <= CUR_MAX_PLAUSIBLE)
+  if (fabs(curUse) <= CUR_MAX_PLAUSIBLE)
   {
     curA[ch] += 0.2f * (curUse - curA[ch]);
     curFilt[ch] = curFilt[ch] * 0.85f + curA[ch] * 0.15f;
 
-    if (curUse > CUR_TRIP_A_CH[ch])
+    if (fabs(curUse) > CUR_TRIP_A_CH[ch])
     {
-      if (++overCurCnt[ch] >= 2)
+      if (++overCurCnt[ch] >= 3)   // 🔴 FIX debounce
       {
         latchFault(FaultCode::OVER_CURRENT);
         return false;
@@ -196,21 +206,6 @@ static bool updateADSCurrent()
     {
       overCurCnt[ch] = 0;
     }
-  }
-
-  // ==================================================
-  // FAILSAFE (SOFT DECAY)
-  // ==================================================
-  static uint32_t lastUpdate[4] = {0};
-  uint32_t now_ms = millis();
-
-  if (fabs(curA[ch]) > 0.1f)
-    lastUpdate[ch] = now_ms;
-
-  if (now_ms - lastUpdate[ch] > 1000)
-  {
-    curA[ch] *= 0.9f;
-    curFilt[ch] *= 0.9f;
   }
 
   ch = (ch + 1) % 4;
@@ -237,7 +232,8 @@ bool updateSensors()
 
   bool ok = updateADSCurrent();
 
-  wdSensor.lastUpdate_ms = millis();
+  if (ok)
+    wdSensor.lastUpdate_ms = millis();  // 🔴 FIX update เฉพาะตอน ok
 
   return ok;
 }
@@ -258,7 +254,7 @@ float getMotorCurrentSafeL(void)
   float c = getMotorCurrentL();
 
   if (sensorDegraded)
-    c *= 0.7f;   // 🔴 soft limit แทน clamp
+    c *= 0.7f;
 
   return c;
 }
@@ -301,29 +297,35 @@ void sensorTask(uint32_t now)
   }
 
   // ==================================================
-  // HEALTH
+  // HEALTH MANAGEMENT (มี hysteresis จริง)
   // ==================================================
   if (ok)
   {
     failStart_ms = 0;
     sensorFailCnt = 0;
-    sensorDegraded = false;
+
+    // 🔴 hysteresis clear
+    if (sensorDegraded && millis() - wdSensor.lastUpdate_ms < 300)
+      sensorDegraded = false;
+
     return;
   }
 
   if (failStart_ms == 0)
     failStart_ms = now;
 
-  if (now - failStart_ms > 800)
+  uint32_t failTime = now - failStart_ms;
+
+  if (failTime > 800)
     sensorDegraded = true;
 
-  if (now - failStart_ms > 1500)
+  if (failTime > 1500)
   {
     i2cState = I2CRecoverState::END_BUS;
     return;
   }
 
-  if (now - failStart_ms > 4000)
+  if (failTime > 4000)
   {
     if (++sensorFailCnt >= 2)
       latchFault(FaultCode::VOLT_SENSOR_FAULT);

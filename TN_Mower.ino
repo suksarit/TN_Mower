@@ -693,6 +693,18 @@ void taskBackground(uint32_t now)
 void runControlLoop(uint32_t now, uint32_t loopStart_us)
 {
   // ==================================================
+  // 🔴 HARD KILL (สูงสุด - หยุดทันที)
+  // ==================================================
+  if (killRequest == KillType::HARD)
+  {
+    driveBufISR.targetL = 0;
+    driveBufISR.targetR = 0;
+    driveBufISR.curL = 0;
+    driveBufISR.curR = 0;
+    return;
+  }
+
+  // ==================================================
   // FIX 1: FIXED DT (DETERMINISTIC)
   // ==================================================
   controlDt_s = 0.02f;
@@ -733,11 +745,13 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   runDrive(now);
 
   // ==================================================
-  // FIX 4: FINAL GUARD
+  // 🔴 FIX 4: FINAL GUARD (กันหลุดหลัง runDrive)
   // ==================================================
   if (systemState != SystemState::ACTIVE ||
       driveState == DriveState::LOCKED)
   {
+    driveBufISR.curL = 0;
+    driveBufISR.curR = 0;
     return;
   }
 

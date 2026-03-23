@@ -1,5 +1,5 @@
 // ============================================================================
-// SafetyManager.cpp (FINAL - INDUSTRIAL STABLE / NO FLAP / LOCKED STATES)
+// SafetyManager.cpp (INDUSTRIAL HARDENED - NO FLAP / TRUE LATCH / REV SAFE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -10,7 +10,7 @@
 // ============================================================================
 static SafetyState driveSafetyInternal = SafetyState::SAFE;
 
-// 🔴 EMERGENCY LOCK FLAG (สำคัญมาก)
+// 🔴 EMERGENCY LOCK (sticky)
 static bool emergencyLatched = false;
 
 // ============================================================================
@@ -41,7 +41,7 @@ static uint32_t safeStableStart_ms = 0;
 static constexpr uint32_t SAFE_STABLE_TIME_MS = 2000;
 
 // ============================================================================
-// RAW SAFETY
+// RAW SAFETY (FIX: รองรับ reverse current)
 // ============================================================================
 SafetyState evaluateSafetyRaw(
   const SafetyInput& in,
@@ -51,8 +51,8 @@ SafetyState evaluateSafetyRaw(
     return SafetyState::EMERGENCY;
 
   float curMax = max(
-    max(in.curA[0], in.curA[1]),
-    max(in.curA[2], in.curA[3]));
+    max(fabs(in.curA[0]), fabs(in.curA[1])),
+    max(fabs(in.curA[2]), fabs(in.curA[3])));
 
   if (curMax > th.CUR_LIMP_A ||
       in.tempDriverL > th.TEMP_LIMP_C ||
@@ -91,7 +91,7 @@ void updateSafetyStability(
   DriveEvent& lastDriveEvent)
 {
   // ==================================================
-  // 🔴 EMERGENCY LOCK (STICKY)
+  // 🔴 EMERGENCY LATCH (sticky)
   // ==================================================
   if (raw == SafetyState::EMERGENCY)
   {
@@ -126,7 +126,6 @@ void updateSafetyStability(
         filtered = SafetyState::LIMP;
         limpConfirmCnt = LIMP_CONFIRM_CNT;
 
-        // 🔴 start hold timer
         limpHoldStart_ms = now;
       }
       break;
@@ -151,7 +150,7 @@ void updateSafetyStability(
   }
 
   // ==================================================
-  // 🔴 HOLD LIMP (กันเด้ง)
+  // 🔴 HOLD LIMP (กันแกว่ง)
   // ==================================================
   if (driveSafetyInternal == SafetyState::LIMP)
   {
@@ -167,7 +166,7 @@ void updateSafetyStability(
   driveSafetyInternal = filtered;
 
   // ==================================================
-  // SAFE STABILITY
+  // SAFE STABILITY (ต้องนิ่งจริงก่อนปล่อย)
   // ==================================================
   if (raw != SafetyState::SAFE)
   {
@@ -209,7 +208,6 @@ void forceSafetyState(SafetyState s)
 {
   driveSafetyInternal = s;
 
-  // 🔴 ถ้า EMERGENCY → lock
   if (s == SafetyState::EMERGENCY)
   {
     emergencyLatched = true;
@@ -220,5 +218,13 @@ void forceSafetyState(SafetyState s)
 
   safetyStability = SafetyStabilityState::SAFE_TRANSIENT;
   safeStableStart_ms = 0;
+}
+
+// ============================================================================
+// 🔴 NEW: CLEAR EMERGENCY LATCH (ต้องเรียกจาก FaultManager เท่านั้น)
+// ============================================================================
+void clearSafetyLatch()
+{
+  emergencyLatched = false;
 }
 
