@@ -1,11 +1,12 @@
 // ============================================================================
-// ThermalManager.cpp (FINAL - ROBUST + SENSOR SAFE)
+// ThermalManager.cpp (FINAL - INDUSTRIAL ROBUST + FAULT SAFE)
 // ============================================================================
 
 #include <Arduino.h>
 #include "ThermalManager.h"
 #include "GlobalState.h"
 #include "SafetyManager.h"
+#include "FaultManager.h"   // 🔴 เพิ่ม
 
 // ======================================================
 // CONFIG
@@ -18,6 +19,13 @@ constexpr int TEMP_CRITICAL_C = 105;
 // 🔴 sanity limit
 constexpr int TEMP_MIN_VALID = -20;
 constexpr int TEMP_MAX_VALID = 150;
+
+// 🔴 current sanity
+constexpr float CURRENT_MAX_VALID = 120.0f;
+
+// 🔴 voltage sanity
+constexpr float VOLT_MIN_VALID = 10.0f;
+constexpr float VOLT_MAX_VALID = 35.0f;
 
 // ======================================================
 // STATE
@@ -36,34 +44,57 @@ static float fanLevelF = 0.0f;
 
 void updateThermalManager(uint32_t now)
 {
+  (void)now;
+
   int tL = tempDriverL;
   int tR = tempDriverR;
 
+  bool tempFault = false;
+
   // ==================================================
-  // 🔴 SANITY CHECK SENSOR
+  // 🔴 SENSOR VALIDATION
   // ==================================================
-  if (tL < TEMP_MIN_VALID || tL > TEMP_MAX_VALID) tL = 80;
-  if (tR < TEMP_MIN_VALID || tR > TEMP_MAX_VALID) tR = 80;
+  if (tL < TEMP_MIN_VALID || tL > TEMP_MAX_VALID)
+  {
+    tL = 80;
+    tempFault = true;
+  }
+
+  if (tR < TEMP_MIN_VALID || tR > TEMP_MAX_VALID)
+  {
+    tR = 80;
+    tempFault = true;
+  }
+
+  if (tempFault)
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[THERMAL] TEMP SENSOR FAULT"));
+#endif
+    latchFault(FaultCode::SENSOR_TIMEOUT);
+  }
 
   int tMax = max(tL, tR);
 
   // ==================================================
-  // EMERGENCY
+  // 🔴 EMERGENCY
   // ==================================================
   if (tMax >= TEMP_CRITICAL_C ||
       getDriveSafety() == SafetyState::EMERGENCY)
   {
     thermalEmergency = true;
+
     fanLevel = 255;
     thermalScale = 0.0f;
     powerScale = 0.0f;
+
     return;
   }
 
   thermalEmergency = false;
 
   // ==================================================
-  // THERMAL SCALE
+  // 🔴 THERMAL SCALE
   // ==================================================
   float targetScale = 1.0f;
 
@@ -78,12 +109,25 @@ void updateThermalManager(uint32_t now)
   }
 
   // ==================================================
-  // CURRENT SCALE (🔴 FIX abs)
+  // 🔴 CURRENT SCALE (FILTER + CLAMP)
   // ==================================================
   float curMax = 0;
 
   for (uint8_t i = 0; i < 4; i++)
-    curMax = max(curMax, fabs(curA[i]));
+  {
+    float c = fabs(curA[i]);
+
+    if (c > CURRENT_MAX_VALID)
+    {
+#if DEBUG_SERIAL
+      Serial.println(F("[THERMAL] CURRENT SENSOR FAULT"));
+#endif
+      latchFault(FaultCode::SENSOR_TIMEOUT);
+      c = CURRENT_MAX_VALID;
+    }
+
+    curMax = max(curMax, c);
+  }
 
   float currentScale = 1.0f;
 
@@ -101,11 +145,18 @@ void updateThermalManager(uint32_t now)
   }
 
   // ==================================================
-  // VOLTAGE SCALE (SANITY)
+  // 🔴 VOLTAGE SCALE (SANITY)
   // ==================================================
   float v = engineVolt;
 
-  if (v < 10 || v > 35) v = 24.0f;
+  if (v < VOLT_MIN_VALID || v > VOLT_MAX_VALID)
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[THERMAL] VOLT SENSOR FAULT"));
+#endif
+    latchFault(FaultCode::SENSOR_TIMEOUT);
+    v = 24.0f;
+  }
 
   float voltageScale = 1.0f;
 
@@ -121,16 +172,20 @@ void updateThermalManager(uint32_t now)
   }
 
   // ==================================================
-  // COMBINE (🔴 clamp กัน drop แรงเกิน)
+  // 🔴 COMBINE (ANTI DROP)
   // ==================================================
   float combined = targetScale * currentScale * voltageScale;
 
-  if (combined < 0.2f) combined = 0.2f;
+  if (combined < 0.25f)
+    combined = 0.25f;
 
-  powerScale += (combined - powerScale) * 0.1f;
+  powerScale += (combined - powerScale) * 0.08f;
+
+  if (powerScale > 1.0f) powerScale = 1.0f;
+  if (powerScale < 0.0f) powerScale = 0.0f;
 
   // ==================================================
-  // FAN
+  // 🔴 FAN CONTROL (SMOOTH)
   // ==================================================
   uint8_t targetFan;
 
@@ -149,7 +204,13 @@ void updateThermalManager(uint32_t now)
   fanLevelF += (targetFan - fanLevelF) * 0.1f;
   fanLevel = (uint8_t)fanLevelF;
 
+  // ==================================================
+  // 🔴 THERMAL SCALE SMOOTH
+  // ==================================================
   thermalScale += (targetScale - thermalScale) * 0.1f;
+
+  if (thermalScale > 1.0f) thermalScale = 1.0f;
+  if (thermalScale < 0.0f) thermalScale = 0.0f;
 }
 
 // ======================================================
@@ -160,5 +221,4 @@ float getThermalScale(void) { return thermalScale; }
 bool isThermalEmergency(void) { return thermalEmergency; }
 float getPowerScale(void) { return powerScale; }
 uint8_t getThermalFanLevel(void) { return fanLevel; }
-
 

@@ -1,11 +1,12 @@
 // ============================================================================
-// VoltageManager.cpp (FINAL - ROBUST + SENSOR SAFE)
+// VoltageManager.cpp (FINAL - INDUSTRIAL ROBUST + FAULT SAFE)
 // ============================================================================
 
 #include <Arduino.h>
 #include "VoltageManager.h"
 #include "GlobalState.h"
 #include "HardwareConfig.h"
+#include "FaultManager.h"   // 🔴 เพิ่ม
 
 void updateVoltageWarning(uint32_t now)
 {
@@ -17,25 +18,57 @@ void updateVoltageWarning(uint32_t now)
   static uint32_t lastToggle_ms = 0;
   static bool buzzerOn = false;
 
-  float v24 = engineVolt;
+  // ==================================================
+  // 🔴 MEDIAN FILTER (3 sample)
+  // ==================================================
+  static float vHist[3] = {24.0f, 24.0f, 24.0f};
+
+  vHist[0] = vHist[1];
+  vHist[1] = vHist[2];
+  vHist[2] = engineVolt;
+
+  float a = vHist[0];
+  float b = vHist[1];
+  float c = vHist[2];
+
+  float v24 =
+    max(min(a, b),
+    min(max(a, b), c));  // median 3
 
   // ==================================================
-  // 🔴 SANITY CHECK
+  // 🔴 SENSOR SANITY
   // ==================================================
-  if (v24 < 10 || v24 > 35)
-    return;  // ignore ค่าเพี้ยน
+  if (v24 < 10.0f || v24 > 35.0f)
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[VOLT] SENSOR FAULT"));
+#endif
+    latchFault(FaultCode::SENSOR_TIMEOUT);
+    v24 = 24.0f;  // fallback
+  }
 
   // ==================================================
-  // SENSOR TIMEOUT
+  // 🔴 SENSOR TIMEOUT
   // ==================================================
   if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms)
   {
+#if DEBUG_SERIAL
+    Serial.println(F("[VOLT] SENSOR TIMEOUT"));
+#endif
+
     digitalWrite(PIN_BUZZER, LOW);
     digitalWrite(RELAY_WARN, LOW);
+
     level = 0;
+    buzzerOn = false;
+
+    latchFault(FaultCode::SENSOR_TIMEOUT);
     return;
   }
 
+  // ==================================================
+  // 🔴 LEVEL DECISION (HYSTERESIS)
+  // ==================================================
   uint8_t newLevel = level;
 
   switch (level)
@@ -58,13 +91,33 @@ void updateVoltageWarning(uint32_t now)
       break;
   }
 
+  // ==================================================
+  // 🔴 CHANGE DETECT (debounce)
+  // ==================================================
+  static uint32_t levelChangeStart = 0;
+
   if (newLevel != level)
   {
-    level = newLevel;
-    lastToggle_ms = now;
-    buzzerOn = false;
+    if (levelChangeStart == 0)
+    {
+      levelChangeStart = now;
+    }
+    else if (now - levelChangeStart > 100) // debounce 100ms
+    {
+      level = newLevel;
+      lastToggle_ms = now;
+      buzzerOn = false;
+      levelChangeStart = 0;
+    }
+  }
+  else
+  {
+    levelChangeStart = 0;
   }
 
+  // ==================================================
+  // 🔴 OUTPUT CONTROL
+  // ==================================================
   switch (level)
   {
     case 0:
@@ -82,7 +135,7 @@ void updateVoltageWarning(uint32_t now)
         buzzerOn = !buzzerOn;
       }
 
-      digitalWrite(PIN_BUZZER, buzzerOn);
+      digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
       break;
     }
 
@@ -96,7 +149,7 @@ void updateVoltageWarning(uint32_t now)
         buzzerOn = !buzzerOn;
       }
 
-      digitalWrite(PIN_BUZZER, buzzerOn);
+      digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
       break;
     }
   }
