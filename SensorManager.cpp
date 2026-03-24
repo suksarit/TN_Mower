@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp (INDUSTRIAL SAFE - FIXED REAL)
+// SensorManager.cpp (FINAL - CURRENT + SPEED FEEDBACK READY)
 // ============================================================================
 
 #include <Arduino.h>
@@ -30,6 +30,10 @@
 static float curPrev[4]   = {0};
 static float slopeLPF[4]  = {0};
 static float curFilt[4]   = {0};
+
+// 🔴 SPEED STATE (ใหม่)
+static float speedEstL = 0;
+static float speedEstR = 0;
 
 // ======================================================
 static volatile uint8_t adcSyncCounter = 0;
@@ -68,6 +72,9 @@ static void resetSensorState()
     curFilt[i] = 0;
     curA[i] = 0;
   }
+
+  speedEstL = 0;
+  speedEstR = 0;
 }
 
 // ======================================================
@@ -98,7 +105,7 @@ static void updateI2CRecovery(uint32_t now)
       adsCurPresent  = adsCur.begin(0x48);
       adsVoltPresent = adsVolt.begin(0x49);
 
-      resetSensorState();   // 🔴 FIX สำคัญ
+      resetSensorState();
 
 #if DEBUG_SERIAL
       Serial.println(F("[I2C RECOVERY DONE]"));
@@ -183,11 +190,11 @@ static bool updateADSCurrent()
 
   float curUse =
     constrain((a * 0.7f + pred * 0.3f),
-              -CUR_MAX_PLAUSIBLE,   // 🔴 FIX รองรับ reverse
+              -CUR_MAX_PLAUSIBLE,
               CUR_MAX_PLAUSIBLE);
 
   // ==================================================
-  // VALID RANGE
+  // VALID
   // ==================================================
   if (fabs(curUse) <= CUR_MAX_PLAUSIBLE)
   {
@@ -196,7 +203,7 @@ static bool updateADSCurrent()
 
     if (fabs(curUse) > CUR_TRIP_A_CH[ch])
     {
-      if (++overCurCnt[ch] >= 3)   // 🔴 FIX debounce
+      if (++overCurCnt[ch] >= 3)
       {
         latchFault(FaultCode::OVER_CURRENT);
         return false;
@@ -232,8 +239,15 @@ bool updateSensors()
 
   bool ok = updateADSCurrent();
 
+  // ==================================================
+  // 🔴 SPEED ESTIMATION (NEW)
+  // ==================================================
+  // ใช้ current เป็น proxy (fallback)
+  speedEstL = speedEstL * 0.8f + curFilt[CUR_CH_LEFT] * 0.2f;
+  speedEstR = speedEstR * 0.8f + curFilt[CUR_CH_RIGHT] * 0.2f;
+
   if (ok)
-    wdSensor.lastUpdate_ms = millis();  // 🔴 FIX update เฉพาะตอน ok
+    wdSensor.lastUpdate_ms = millis();
 
   return ok;
 }
@@ -252,21 +266,28 @@ float getMotorCurrentR(void)
 float getMotorCurrentSafeL(void)
 {
   float c = getMotorCurrentL();
-
-  if (sensorDegraded)
-    c *= 0.7f;
-
+  if (sensorDegraded) c *= 0.7f;
   return c;
 }
 
 float getMotorCurrentSafeR(void)
 {
   float c = getMotorCurrentR();
-
-  if (sensorDegraded)
-    c *= 0.7f;
-
+  if (sensorDegraded) c *= 0.7f;
   return c;
+}
+
+// ======================================================
+// 🔴 SPEED API (ใหม่)
+// ======================================================
+float getSpeedL(void)
+{
+  return speedEstL * 0.03f;
+}
+
+float getSpeedR(void)
+{
+  return speedEstR * 0.03f;
 }
 
 // ======================================================
@@ -296,15 +317,11 @@ void sensorTask(uint32_t now)
     return;
   }
 
-  // ==================================================
-  // HEALTH MANAGEMENT (มี hysteresis จริง)
-  // ==================================================
   if (ok)
   {
     failStart_ms = 0;
     sensorFailCnt = 0;
 
-    // 🔴 hysteresis clear
     if (sensorDegraded && millis() - wdSensor.lastUpdate_ms < 300)
       sensorDegraded = false;
 
