@@ -1,5 +1,5 @@
 // ============================================================================
-// CurrentCalibration.cpp (HARDENED - STABLE + SAFE OFFSET)
+// CurrentCalibration.cpp (FINAL - SAFE CAL + ANTI-DRIFT)
 // ============================================================================
 
 #include <Arduino.h>
@@ -13,11 +13,14 @@
 constexpr uint8_t CAL_SAMPLE_N = 32;
 constexpr uint16_t CAL_TIMEOUT_MS = 400;
 
-// ต้องนิ่งจริงก่อนนับ sample
 constexpr float CAL_STABLE_THRESHOLD_A = 1.0f;
 
-constexpr float REZERO_THRESHOLD_A = 1.2f;
-constexpr float REZERO_ALPHA = 0.01f;   // 🔴 ลดลง กัน drift
+// 🔴 sanity limit (กัน offset เพี้ยน)
+constexpr float OFFSET_MAX_ABS = 5.0f;
+
+// 🔴 auto re-zero
+constexpr float REZERO_THRESHOLD_A = 1.0f;
+constexpr float REZERO_ALPHA = 0.005f;
 
 // ======================================================
 // INTERNAL STATE
@@ -29,7 +32,7 @@ static uint32_t calStart_ms = 0;
 static bool calDone = false;
 
 // ======================================================
-// RESET (เรียกตอน boot หรือ fault)
+// RESET
 // ======================================================
 
 void resetCurrentCalibration()
@@ -46,7 +49,7 @@ void resetCurrentCalibration()
 }
 
 // ======================================================
-// NON-BLOCKING CALIBRATION
+// NON-BLOCKING CALIBRATION (SAFE)
 // ======================================================
 
 bool calibrateCurrentOffsetNonBlocking(uint32_t now)
@@ -56,15 +59,20 @@ bool calibrateCurrentOffsetNonBlocking(uint32_t now)
   if (calStart_ms == 0)
     calStart_ms = now;
 
-  // timeout กันค้าง
+  // ==================================================
+  // 🔴 TIMEOUT = FAIL SAFE (ไม่ใช้ค่าเพี้ยน)
+  // ==================================================
   if (now - calStart_ms > CAL_TIMEOUT_MS)
   {
+#if DEBUG_SERIAL
+    Serial.println(F("[CAL] TIMEOUT -> SKIP OFFSET"));
+#endif
     calDone = true;
     return true;
   }
 
   // ==================================================
-  // 🔴 ต้องนิ่งจริงก่อนนับ
+  // ต้องนิ่งจริง
   // ==================================================
   for (uint8_t i = 0; i < 4; i++)
   {
@@ -93,13 +101,19 @@ bool calibrateCurrentOffsetNonBlocking(uint32_t now)
   {
     for (uint8_t i = 0; i < 4; i++)
     {
-      currentOffset[i] = calAccum[i] / CAL_SAMPLE_N;
+      float offset = calAccum[i] / CAL_SAMPLE_N;
+
+      // 🔴 sanity check
+      if (fabs(offset) < OFFSET_MAX_ABS)
+        currentOffset[i] = offset;
+      else
+        currentOffset[i] = 0;  // reject
     }
 
     calDone = true;
 
 #if DEBUG_SERIAL
-    Serial.println(F("[CAL] CURRENT OFFSET DONE"));
+    Serial.println(F("[CAL] OFFSET DONE"));
 #endif
 
     return true;
@@ -114,18 +128,15 @@ bool calibrateCurrentOffsetNonBlocking(uint32_t now)
 
 void idleCurrentAutoRezero(uint32_t now)
 {
-  // ต้อง idle จริง (ทั้ง throttle + output)
+  // ต้อง throttle idle
   if (abs((int)rcThrottle - 1500) > 40)
     return;
 
-  if (abs(curL) > 20 || abs(curR) > 20)
-    return;
-
+  // 🔴 ต้อง current ต่ำจริง (ไม่ใช้ PWM)
   for (uint8_t i = 0; i < 4; i++)
   {
     float err = curA[i] - currentOffset[i];
 
-    // 🔴 ต้องใกล้จริง และไม่ drift
     if (fabs(err) < REZERO_THRESHOLD_A)
     {
       currentOffset[i] =

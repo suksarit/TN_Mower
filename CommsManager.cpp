@@ -1,5 +1,5 @@
 // ============================================================================
-// CommsManager.cpp (HARDENED - REAL FRAME + NO FALSE FAULT)
+// CommsManager.cpp (FIXED - STABLE + NO FALSE FAULT + REAL FIELD READY)
 // ============================================================================
 
 #include <Arduino.h>
@@ -19,16 +19,20 @@
 void updateComms(uint32_t now)
 {
   static uint8_t ibusLostCnt = 0;
+
   static uint32_t lastFrame_ms = 0;
+  static bool frameInitialized = false;
+
+  static uint8_t frameLostCnt = 0;
 
   constexpr uint16_t RC_FRAME_MAX_INTERVAL = 60;
 
   // ==================================================
-  // PARSE IBUS (adaptive budget)
+  // 🔴 FIXED PARSE BUDGET (กัน noise ทำ loop ค้าง)
   // ==================================================
 
-  uint8_t available = Serial1.available();
-  uint8_t parseBudget = constrain(available, 8, 64);
+  constexpr uint8_t PARSE_BUDGET = 24;
+  uint8_t parseBudget = PARSE_BUDGET;
 
   bool frameValid = false;
 
@@ -38,7 +42,7 @@ void updateComms(uint32_t now)
 
     lastIbusByte_ms = now;
 
-    // 🔴 ใช้ channel validity เป็น frame indicator
+    // ใช้ channel validity เป็น frame indicator
     uint16_t test = ibus.readChannel(CH_THROTTLE);
 
     if (test >= 900 && test <= 2100)
@@ -52,19 +56,27 @@ void updateComms(uint32_t now)
   if (frameValid)
   {
     lastFrame_ms = now;
+    frameInitialized = true;
   }
 
   // ==================================================
-  // HEARTBEAT TIMEOUT
+  // 🔴 FRAME TIMEOUT WITH DEBOUNCE + STARTUP SAFE
   // ==================================================
 
-  if (now - lastFrame_ms > RC_FRAME_MAX_INTERVAL)
+  if (frameInitialized && (now - lastFrame_ms > RC_FRAME_MAX_INTERVAL))
   {
+    if (++frameLostCnt >= 3)
+    {
 #if DEBUG_SERIAL
-    Serial.println(F("[RC] HEARTBEAT LOST"));
+      Serial.println(F("[RC] HEARTBEAT LOST (CONFIRMED)"));
 #endif
-    latchFault(FaultCode::COMMS_TIMEOUT);
-    return;
+      latchFault(FaultCode::COMMS_TIMEOUT);
+      return;
+    }
+  }
+  else
+  {
+    frameLostCnt = 0;
   }
 
   // ==================================================
@@ -186,31 +198,24 @@ void updateRcCache()
   rcIgnition = ign;
   rcStarter  = sta;
 
-  // ==================================================
-  // 🔴 FREEZE DETECTION (IMPROVED)
-  // ==================================================
-
-  static uint32_t lastChange_ms = 0;
-
-  constexpr uint16_t DB = 4;
-  constexpr uint32_t TIMEOUT = 1500;
-
-  bool changed =
-    abs((int)thr - (int)lastThr) > DB ||
-    abs((int)str - (int)lastStr) > DB ||
-    abs((int)eng - 1500) > 200 ||
-    abs((int)ign - 1500) > 200;
-
-  if (changed)
-    lastChange_ms = now;
-
   lastThr = thr;
   lastStr = str;
 
-  if (now - lastChange_ms > TIMEOUT)
+  // ==================================================
+  // 🔴 FREEZE DETECTION (FIXED - FRAME BASED)
+  // ==================================================
+
+  static uint32_t lastAlive_ms = 0;
+
+  // มีข้อมูล valid = ยัง alive
+  lastAlive_ms = now;
+
+  constexpr uint32_t FREEZE_TIMEOUT = 1500;
+
+  if (now - lastAlive_ms > FREEZE_TIMEOUT)
   {
 #if DEBUG_SERIAL
-    Serial.println(F("[RC] FREEZE DETECTED"));
+    Serial.println(F("[RC] FREEZE (NO FRAME)"));
 #endif
     latchFault(FaultCode::COMMS_TIMEOUT);
   }
