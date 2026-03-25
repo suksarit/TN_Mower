@@ -71,6 +71,10 @@ struct TelemetryPacket
 // CSV
 // ======================================================
 
+// ======================================================
+// CSV (MOBILE / REALTIME GRAPH READY)
+// ======================================================
+
 void telemetryCSV(uint32_t now, uint32_t loopStart_us)
 {
 #if TELEMETRY_CSV
@@ -79,33 +83,20 @@ void telemetryCSV(uint32_t now, uint32_t loopStart_us)
   if (now - lastTx < TELEMETRY_PERIOD_MS) return;
   lastTx = now;
 
-  uint32_t loopTime = micros() - loopStart_us;
+  // 🔴 FORMAT:
+  // time,curL,curR,volt,pwmL,pwmR,fault
 
-  int cpu = (int)((loopTime * 1000.0f) / (BUDGET_LOOP_MS * 1000UL));
-  if (cpu > 9990) cpu = 9990;
-  if (cpu < 0) cpu = 0;
+  Serial.print(now); Serial.print(",");
 
-  float curMax =
-    max(max(curA[0], curA[1]),
-        max(curA[2], curA[3]));
+  Serial.print(curA[0], 2); Serial.print(",");   // current L
+  Serial.print(curA[1], 2); Serial.print(",");   // current R
 
-  char buf[128];
+  Serial.print(engineVolt, 2); Serial.print(","); // voltage
 
-  int len = snprintf(
-    buf, sizeof(buf),
-    "%lu,%d,%d,%d,%d,%d,%d",
-    now,
-    tempDriverL,
-    tempDriverR,
-    (int)(engineVolt * 10),
-    (int)(curMax * 10),
-    cpu,
-    (uint8_t)getActiveFault()   // 🔴 FIX
-  );
+  Serial.print(curL); Serial.print(",");          // PWM L
+  Serial.print(curR); Serial.print(",");          // PWM R
 
-  if (len <= 0 || len >= (int)sizeof(buf)) return;
-
-  Serial.println(buf);
+  Serial.println((uint8_t)getActiveFault());      // fault code
 
 #endif
 }

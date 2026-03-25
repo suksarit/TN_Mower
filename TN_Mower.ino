@@ -20,9 +20,10 @@
 #include <avr/wdt.h>
 #include <Wire.h>
 #include <Adafruit_MAX31865.h>
-#include "Storm32Controller.h"
 #include <Adafruit_ADS1X15.h>
 
+#include "Storm32Controller.h"
+#include "BluetoothManager.h"
 #include "DriveController.h"
 #include "MotorDriver.h"
 #include "SensorManager.h"
@@ -477,8 +478,7 @@ void taskComms(uint32_t now) {
   }
 }
 
-void taskDriveEvents(uint32_t now)
-{
+void taskDriveEvents(uint32_t now) {
   cli();  // 🔴 lock interrupt
 
   curA_snapshot[0] = getMotorCurrentL();
@@ -678,13 +678,11 @@ void taskBackground(uint32_t now) {
   backgroundFaultEEPROMTask(now);
 }
 
-void runControlLoop(uint32_t now, uint32_t loopStart_us)
-{
+void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   // ==================================================
   // 🔴 HARD KILL (สูงสุด - หยุดทันที)
   // ==================================================
-  if (killRequest == KillType::HARD)
-  {
+  if (killRequest == KillType::HARD) {
     driveBufISR.targetL = 0;
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
@@ -707,8 +705,7 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   // ==================================================
   // FIX 2: SAFETY GUARD (ก่อนทุกอย่าง)
   // ==================================================
-  if (!driveSafetyGuard())
-  {
+  if (!driveSafetyGuard()) {
     driveBufISR.targetL = 0;
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
@@ -753,8 +750,7 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   // ==================================================
   // FIX 4: SYSTEM STATE GUARD
   // ==================================================
-  if (systemState != SystemState::ACTIVE)
-  {
+  if (systemState != SystemState::ACTIVE) {
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
 
@@ -773,9 +769,7 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   // ==================================================
   // 🔴 FIX 5: FINAL GUARD (กันหลุดหลัง runDrive)
   // ==================================================
-  if (systemState != SystemState::ACTIVE ||
-      driveState == DriveState::LOCKED)
-  {
+  if (systemState != SystemState::ACTIVE || driveState == DriveState::LOCKED) {
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
 
@@ -1013,56 +1007,44 @@ void setup() {
 void loop() {
   uint32_t loopStart_us = micros();
 
-  // --------------------------------------------------
-  // 🔴 REAL-TIME CONTROL (DETERMINISTIC)
-  // --------------------------------------------------
+  // ==================================================
+  // REAL-TIME CONTROL
+  // ==================================================
   uint8_t ticksToRun;
 
-  // -----------------------------
-  // ATOMIC SNAPSHOT
-  // -----------------------------
   cli();
   ticksToRun = controlTicks;
   controlTicks = 0;
   sei();
 
-  // 🔴 DROP BACKLOG
-  if (ticksToRun > 1) {
-    ticksToRun = 1;
-  }
+  if (ticksToRun > 1) ticksToRun = 1;
 
-  // -----------------------------
-  // RUN CONTROL LOOP (1 ครั้ง)
-  // -----------------------------
   if (ticksToRun == 1) {
     uint32_t ctrlStart = micros();
-
     uint32_t ctrlNow = millis();
 
     runControlLoop(ctrlNow, loopStart_us);
 
     uint32_t ctrlTime = micros() - ctrlStart;
 
-    // 🔴 LOOP OVERRUN PROTECTION
     if (ctrlTime > CONTROL_PERIOD_US) {
       requestFault(FaultCode::LOOP_OVERRUN);
     }
   }
 
-  // --------------------------------------------------
+  // ==================================================
   // COPY BUFFER
-  // --------------------------------------------------
+  // ==================================================
   copyDriveBuffer();
 
-  // --------------------------------------------------
-  // UPDATE TIME
-  // --------------------------------------------------
   uint32_t now = millis();
 
-  // --------------------------------------------------
-  // BACKGROUND TASK
-  // --------------------------------------------------
-  taskComms(now);
+  // ==================================================
+  // BACKGROUND
+  // ==================================================
+  taskComms(now);              // 🔴 RC ก่อน
+  updateBluetoothCommand();    // 🔴 BT หลัง
+
   sensorTask(now);
 
   processFaultReset(now);
@@ -1070,41 +1052,39 @@ void loop() {
   taskDriveEvents(now);
   taskSafety(now);
 
-  // --------------------------------------------------
-  // SYSTEM GATE
-  // --------------------------------------------------
-  if (!taskSystemGate(now, loopStart_us))
-    return;
-
-  // --------------------------------------------------
-  // OTHER TASKS
-  // --------------------------------------------------
-  taskBlade(now);
-  taskAux(now);
-  taskDriverEnable(now);
-
-  // --------------------------------------------------
-  // BACKGROUND / SUPERVISOR
-  // --------------------------------------------------
-  taskBackground(now);
-  taskLoopSupervisor(loopStart_us);
-  taskWatchdog();
-
-  // --------------------------------------------------
-  // 🔴 FAULT DEBUG (ANTI-SPAM)
-  // --------------------------------------------------
+  // ==================================================
+  // 🔴 FAULT DEBUG (ต้องอยู่ก่อน gate)
+  // ==================================================
   static FaultCode lastFault = FaultCode::NONE;
 
   FaultCode currentFault = getActiveFault();
 
-  if (currentFault != lastFault)
-  {
+  if (currentFault != lastFault) {
 #if DEBUG_SERIAL
     Serial.print(F("[FAULT] "));
     Serial.println(faultCodeToString(currentFault));
 #endif
     lastFault = currentFault;
   }
-}
 
+  // ==================================================
+  // SYSTEM GATE
+  // ==================================================
+  if (!taskSystemGate(now, loopStart_us))
+    return;
+
+  // ==================================================
+  // OTHER TASKS
+  // ==================================================
+  taskBlade(now);
+  taskAux(now);
+  taskDriverEnable(now);
+
+  // ==================================================
+  // SUPERVISOR
+  // ==================================================
+  taskBackground(now);
+  taskLoopSupervisor(loopStart_us);
+  taskWatchdog();
+}
 
