@@ -54,3 +54,10 @@
 1. **โคลนโปรเจกต์ (Clone the repository):**
    ```bash
    git clone [https://github.com/suksarit/TN_Mower.git](https://github.com/suksarit/TN_Mower.git)
+2. เปิดโปรเจกต์: เปิดไฟล์ TN_Mower.ino ด้วย Arduino IDE หรือ PlatformIO
+
+3. ตั้งค่าฮาร์ดแวร์: ตรวจสอบและแก้ไขการกำหนดพิน (Pin Assignments) ในไฟล์ HardwareConfig.h ให้ตรงกับบอร์ดและ Wiring ของคุณ
+
+4. คอมไพล์และอัปโหลด: เลือกบอร์ดที่ใช้งานและทำการอัปโหลดโค้ดลงไมโครคอนโทรลเลอร์
+
+5. คู่มือเพิ่มเติม: อ่านการตั้งค่าเชิงลึกได้ที่ไฟล์ คู่มือ.txt
