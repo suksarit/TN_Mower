@@ -61,7 +61,7 @@ void i2cBusClear();
 // FUNCTION PROTOTYPES (FINAL / MATCH ARDUINO ABI)
 bool readDriverTempsPT100(int &tL, int &tR);
 bool updateSensors(void);
-void latchFault(FaultCode code);
+void requestFault(FaultCode code);
 
 // DRIVE PIPELINE
 bool driveSafetyGuard();
@@ -453,7 +453,7 @@ void updateSystemState(uint32_t now) {
       break;
 
     default:
-      latchFault(FaultCode::LOGIC_WATCHDOG);
+      requestFault(FaultCode::LOGIC_WATCHDOG);
       systemState = SystemState::FAULT;
       break;
   }
@@ -471,7 +471,7 @@ void taskComms(uint32_t now) {
 
   if (dtComms > BUDGET_COMMS_MS * 1000UL) {
     if (++commsBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::COMMS_TIMEOUT);
+      requestFault(FaultCode::COMMS_TIMEOUT);
   } else {
     commsBudgetCnt = 0;
   }
@@ -563,7 +563,7 @@ void taskBlade(uint32_t now) {
 
   if (dtBlade > BUDGET_BLADE_MS * 1000UL) {
     if (++bladeBudgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::BLADE_TIMEOUT);
+      requestFault(FaultCode::BLADE_TIMEOUT);
   } else {
     bladeBudgetCnt = 0;
     wdBlade.lastUpdate_ms = now;
@@ -634,7 +634,7 @@ void taskLoopSupervisor(uint32_t loopStart_us) {
   uint32_t loopBudget_us = BUDGET_LOOP_MS * 1000UL;
 
   if (loopTime_us > LOOP_HARD_LIMIT_US)
-    latchFault(FaultCode::LOOP_OVERRUN);
+    requestFault(FaultCode::LOOP_OVERRUN);
 
   if (loopTime_us > loopBudget_us)
     loopOverrunAccum_us += (loopTime_us - loopBudget_us);
@@ -645,14 +645,14 @@ void taskLoopSupervisor(uint32_t loopStart_us) {
   }
 
   if (loopOverrunAccum_us > LOOP_OVERRUN_FAULT_US)
-    latchFault(FaultCode::LOOP_OVERRUN);
+    requestFault(FaultCode::LOOP_OVERRUN);
 }
 
 void taskWatchdog() {
   int freeMem = freeRam();
 
   if (freeMem < 600) {
-    latchFault(FaultCode::LOGIC_WATCHDOG);
+    requestFault(FaultCode::LOGIC_WATCHDOG);
   }
 
   bool wdHealthy =
@@ -1026,42 +1026,41 @@ void loop() {
   controlTicks = 0;
   sei();
 
-  // 🔴 FIX 1: DROP BACKLOG ทันที
+  // 🔴 DROP BACKLOG
   if (ticksToRun > 1) {
     ticksToRun = 1;
   }
 
   // -----------------------------
-  // RUN CONTROL LOOP (1 ครั้งเท่านั้น)
+  // RUN CONTROL LOOP (1 ครั้ง)
   // -----------------------------
   if (ticksToRun == 1) {
     uint32_t ctrlStart = micros();
 
-    // 🔴 อ่านเวลา "ตอนจะใช้จริง"
     uint32_t ctrlNow = millis();
 
     runControlLoop(ctrlNow, loopStart_us);
 
     uint32_t ctrlTime = micros() - ctrlStart;
 
-    // 🔴 HARD GUARD
+    // 🔴 LOOP OVERRUN PROTECTION
     if (ctrlTime > CONTROL_PERIOD_US) {
-      latchFault(FaultCode::LOOP_OVERRUN);
+      requestFault(FaultCode::LOOP_OVERRUN);
     }
   }
 
   // --------------------------------------------------
-  // 🔴 COPY BUFFER (หลัง control เท่านั้น)
+  // COPY BUFFER
   // --------------------------------------------------
   copyDriveBuffer();
 
   // --------------------------------------------------
-  // 🔴 UPDATE TIME หลัง control (แม่นกว่า)
+  // UPDATE TIME
   // --------------------------------------------------
   uint32_t now = millis();
 
   // --------------------------------------------------
-  // BACKGROUND TASK (NON REAL-TIME)
+  // BACKGROUND TASK
   // --------------------------------------------------
   taskComms(now);
   sensorTask(now);
@@ -1090,4 +1089,22 @@ void loop() {
   taskBackground(now);
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
+
+  // --------------------------------------------------
+  // 🔴 FAULT DEBUG (ANTI-SPAM)
+  // --------------------------------------------------
+  static FaultCode lastFault = FaultCode::NONE;
+
+  FaultCode currentFault = getActiveFault();
+
+  if (currentFault != lastFault)
+  {
+#if DEBUG_SERIAL
+    Serial.print(F("[FAULT] "));
+    Serial.println(faultCodeToString(currentFault));
+#endif
+    lastFault = currentFault;
+  }
 }
+
+

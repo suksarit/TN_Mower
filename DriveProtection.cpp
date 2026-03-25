@@ -273,7 +273,7 @@ void detectWheelLock()
     if (millis() - lockStart_ms > 120)
     {
       setDriveEvent(DriveEvent::WHEEL_LOCK);
-      latchFault(FaultCode::OVER_CURRENT);
+      requestFault(FaultCode::OVER_CURRENT);
     }
   }
   else

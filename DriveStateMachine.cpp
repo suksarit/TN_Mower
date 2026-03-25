@@ -51,7 +51,7 @@ void runDrive(uint32_t now)
 #if DEBUG_SERIAL
       Serial.println(F("[DRIVE] RUNAWAY DETECTED"));
 #endif
-      latchFault(FaultCode::DRIVE_TIMEOUT);
+      requestFault(FaultCode::DRIVE_TIMEOUT);
     }
   }
   else
@@ -191,7 +191,7 @@ void runDrive(uint32_t now)
     // --------------------------------------------------
     default:
     {
-      latchFault(FaultCode::LOGIC_WATCHDOG);
+      requestFault(FaultCode::LOGIC_WATCHDOG);
 
       driveSafe();
 

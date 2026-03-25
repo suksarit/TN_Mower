@@ -214,7 +214,7 @@ static bool updateADSCurrent()
   {
     if (++overCurCnt[ch] >= 3)
     {
-      latchFault(FaultCode::OVER_CURRENT);
+      requestFault(FaultCode::OVER_CURRENT);
       return false;
     }
   }
@@ -241,7 +241,7 @@ bool updateSensors()
 
   if (digitalRead(PIN_CUR_TRIP) == LOW)
   {
-    latchFault(FaultCode::OVER_CURRENT);
+    requestFault(FaultCode::OVER_CURRENT);
     return false;
   }
 
@@ -271,7 +271,7 @@ bool updateSensors()
 
   if (now - lastGoodRead_ms > 800)
   {
-    latchFault(FaultCode::SENSOR_TIMEOUT);
+    requestFault(FaultCode::SENSOR_TIMEOUT);
   }
 
   return ok;
@@ -327,7 +327,7 @@ void sensorTask(uint32_t now)
   if (dt > (BUDGET_SENSORS_MS * 1000UL))
   {
     if (++budgetCnt >= PHASE_BUDGET_CONFIRM)
-      latchFault(FaultCode::SENSOR_TIMEOUT);
+      requestFault(FaultCode::SENSOR_TIMEOUT);
   }
   else
   {
@@ -368,7 +368,7 @@ void sensorTask(uint32_t now)
   if (failTime > 4000)
   {
     if (++sensorFailCnt >= 2)
-      latchFault(FaultCode::SENSOR_TIMEOUT);
+      requestFault(FaultCode::SENSOR_TIMEOUT);
   }
 }
 

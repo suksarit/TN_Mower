@@ -19,7 +19,7 @@ enum class SafetyState : uint8_t {
 };
 
 // ============================================================================
-// DRIVE EVENT (EEPROM SAFE - APPEND ONLY)
+// DRIVE EVENT
 // ============================================================================
 enum class DriveEvent : uint8_t {
   NONE = 0,
@@ -40,7 +40,6 @@ enum class DriveEvent : uint8_t {
   SAFETY_LIMIT = 13,
   THERMAL_LIMIT = 14,
 
-  // 🔴 reserve future space (กันพัง EEPROM)
   RESERVED_15 = 15,
   RESERVED_16 = 16,
 
@@ -106,18 +105,20 @@ enum class FaultCode : uint8_t {
   LOOP_OVERRUN,
   LOW_VOLTAGE_CRITICAL,
 
-  // 🔴 เพิ่ม WARN (จำเป็นสำหรับ FaultSeverity)
   LOW_VOLTAGE_WARN,
 
-  // 🔴 reserve กันอนาคต
   RESERVED_1,
   RESERVED_2,
+
+  // 🔴 เพิ่มใหม่ (ต้องต่อท้ายเท่านั้น)
+  RC_INVALID,
+  ENGINE_START_FAIL,
 
   _COUNT
 };
 
 // ============================================================================
-// I2C RECOVERY STATE
+// OTHER ENUMS
 // ============================================================================
 enum class I2CRecoverState : uint8_t {
   IDLE,
@@ -127,9 +128,6 @@ enum class I2CRecoverState : uint8_t {
   DONE
 };
 
-// ============================================================================
-// ACS CALIBRATION STATE
-// ============================================================================
 enum class ACSCalState : uint8_t {
   IDLE,
   START_CH,
@@ -140,9 +138,6 @@ enum class ACSCalState : uint8_t {
   FAIL
 };
 
-// ============================================================================
-// KILL TYPE (CONTROL ARCH)
-// ============================================================================
 enum class KillType : uint8_t {
   NONE = 0,
   SOFT = 1,
@@ -151,7 +146,7 @@ enum class KillType : uint8_t {
 };
 
 // ============================================================================
-// ENUM VALIDATION (SAFE)
+// ENUM VALIDATION
 // ============================================================================
 template<typename E>
 inline bool isValidEnum(uint8_t raw) {
@@ -159,9 +154,8 @@ inline bool isValidEnum(uint8_t raw) {
 }
 
 // ============================================================================
-// DEBUG STRING HELPERS (สำคัญมากสำหรับ debug)
+// DEBUG STRING
 // ============================================================================
-
 inline const char* safetyStateToString(SafetyState s)
 {
   switch (s)
@@ -190,6 +184,11 @@ inline const char* faultCodeToString(FaultCode f)
     case FaultCode::LOOP_OVERRUN: return "LOOP_OVERRUN";
     case FaultCode::LOW_VOLTAGE_CRITICAL: return "LOW_VOLTAGE_CRITICAL";
     case FaultCode::LOW_VOLTAGE_WARN: return "LOW_VOLTAGE_WARN";
+
+    // 🔴 เพิ่ม debug
+    case FaultCode::RC_INVALID: return "RC_INVALID";
+    case FaultCode::ENGINE_START_FAIL: return "ENGINE_START_FAIL";
+
     default: return "UNKNOWN";
   }
 }

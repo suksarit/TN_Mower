@@ -44,7 +44,7 @@ void updateVoltageWarning(uint32_t now)
 #if DEBUG_SERIAL
     Serial.println(F("[VOLT] SENSOR FAULT"));
 #endif
-    latchFault(FaultCode::SENSOR_TIMEOUT);
+    requestFault(FaultCode::SENSOR_TIMEOUT);
     v24 = 24.0f;  // fallback
   }
 
@@ -63,7 +63,7 @@ void updateVoltageWarning(uint32_t now)
     level = 0;
     buzzerOn = false;
 
-    latchFault(FaultCode::SENSOR_TIMEOUT);
+    requestFault(FaultCode::SENSOR_TIMEOUT);
     return;
   }
 

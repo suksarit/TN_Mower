@@ -77,7 +77,7 @@ bool calibrateCurrentOffsetNonBlocking(uint32_t now)
 #if DEBUG_SERIAL
       Serial.println(F("[CAL] CURRENT SENSOR FAULT"));
 #endif
-      latchFault(FaultCode::SENSOR_TIMEOUT);
+      requestFault(FaultCode::SENSOR_TIMEOUT);
       calDone = true;
       return true;
     }

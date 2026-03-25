@@ -1,5 +1,5 @@
 // ============================================================================
-// CommsManager.cpp  
+// CommsManager.cpp 
 // ============================================================================
 
 #include <Arduino.h>
@@ -13,56 +13,64 @@
 #include "CommsManager.h"
 
 // ============================================================================
-// UPDATE COMMUNICATION STATE (FRAME-BASED INDUSTRIAL)
+// UPDATE COMMUNICATION STATE
 // ============================================================================
 void updateComms(uint32_t now)
 {
   static uint8_t ibusLostCnt = 0;
-  static bool frameInitialized = false;
   static uint8_t frameLostCnt = 0;
+  static bool frameInitialized = false;
 
   constexpr uint16_t RC_FRAME_MAX_INTERVAL = 60;
-
-  // ==================================================
-  // PARSE BUDGET (กัน loop ค้าง)
-  // ==================================================
   constexpr uint8_t PARSE_BUDGET = 24;
+
   uint8_t parseBudget = PARSE_BUDGET;
 
   bool frameValid = false;
 
+  uint16_t thr = 1500;
+  uint16_t str = 1500;
+
+  // ==================================================
+  // PARSE
+  // ==================================================
   while (Serial1.available() && parseBudget--)
   {
     ibus.loop();
-
     lastIbusByte_ms = now;
 
-    uint16_t test = ibus.readChannel(CH_THROTTLE);
+    thr = ibus.readChannel(CH_THROTTLE);
+    str = ibus.readChannel(CH_STEER);
 
-    if (test >= 900 && test <= 2100)
+    // 🔴 validate multi-channel
+    if (thr >= 900 && thr <= 2100 &&
+        str >= 900 && str <= 2100)
+    {
       frameValid = true;
+    }
   }
 
   // ==================================================
-  // 🔴 FRAME HEARTBEAT (GLOBAL TIMESTAMP)
+  // HEARTBEAT
   // ==================================================
   if (frameValid)
   {
-    rcLastFrame_ms = now;   // 🔴 สำคัญที่สุด
+    rcLastFrame_ms = now;
     frameInitialized = true;
   }
 
   // ==================================================
-  // FRAME TIMEOUT (DEBOUNCE)
+  // FRAME LOST
   // ==================================================
-  if (frameInitialized && (now - rcLastFrame_ms > RC_FRAME_MAX_INTERVAL))
+  if (frameInitialized &&
+      (now - rcLastFrame_ms > RC_FRAME_MAX_INTERVAL))
   {
     if (++frameLostCnt >= 3)
     {
 #if DEBUG_SERIAL
-      Serial.println(F("[RC] HEARTBEAT LOST (CONFIRMED)"));
+      Serial.println(F("[RC] TIMEOUT"));
 #endif
-      latchFault(FaultCode::COMMS_TIMEOUT);
+      requestFault(FaultCode::COMMS_TIMEOUT);
       return;
     }
   }
@@ -72,40 +80,17 @@ void updateComms(uint32_t now)
   }
 
   // ==================================================
-  // RECOVERY
-  // ==================================================
-  if (frameValid)
-  {
-    if (ibusCommLost)
-    {
-#if DEBUG_SERIAL
-      Serial.println(F("[IBUS] RECOVERED"));
-#endif
-      requireIbusConfirm = true;
-      ibusRecoverStart_ms = now;
-    }
-
-    ibusLostCnt = 0;
-    ibusCommLost = false;
-
-    wdComms.lastUpdate_ms = now;
-  }
-
-  // ==================================================
   // SOFT LOST
   // ==================================================
   if (now - lastIbusByte_ms > 120)
   {
     if (++ibusLostCnt >= 3)
     {
-      if (!ibusCommLost)
-      {
 #if DEBUG_SERIAL
-        Serial.println(F("[IBUS] SOFT LOST"));
+      Serial.println(F("[IBUS] SOFT LOST"));
 #endif
-        ibusCommLost = true;
-        requireIbusConfirm = true;
-      }
+      ibusCommLost = true;
+      requireIbusConfirm = true;
     }
   }
   else
@@ -119,51 +104,43 @@ void updateComms(uint32_t now)
   if (now - lastIbusByte_ms > IBUS_TIMEOUT_MS)
   {
 #if DEBUG_SERIAL
-    Serial.println(F("[IBUS] HARD LOST -> FAULT"));
+    Serial.println(F("[IBUS] HARD LOST"));
 #endif
-    latchFault(FaultCode::IBUS_LOST);
+    requestFault(FaultCode::IBUS_LOST);
     return;
   }
 
   // ==================================================
-  // HEALTHY
+  // RECOVERY
   // ==================================================
-  if (!ibusCommLost)
+  if (frameValid)
   {
+    ibusCommLost = false;
     wdComms.lastUpdate_ms = now;
   }
 }
 
 // ============================================================================
-// UPDATE RC CACHE (INDUSTRIAL - FRAME BASED)
+// UPDATE RC CACHE
 // ============================================================================
 void updateRcCache()
 {
   uint32_t now = millis();
 
-  // ==================================================
-  // HARD GUARD
-  // ==================================================
   if (ibusCommLost)
     return;
 
-  // ==================================================
-  // 🔴 FREEZE DETECTION (REAL INDUSTRIAL)
-  // ==================================================
   constexpr uint32_t FREEZE_TIMEOUT = 150;
 
   if (now - rcLastFrame_ms > FREEZE_TIMEOUT)
   {
 #if DEBUG_SERIAL
-    Serial.println(F("[RC] FREEZE (FRAME TIMEOUT)"));
+    Serial.println(F("[RC] FREEZE"));
 #endif
-    latchFault(FaultCode::COMMS_TIMEOUT);
+    requestFault(FaultCode::COMMS_TIMEOUT);
     return;
   }
 
-  // ==================================================
-  // READ CHANNEL
-  // ==================================================
   uint16_t thr = ibus.readChannel(CH_THROTTLE);
   uint16_t str = ibus.readChannel(CH_STEER);
   uint16_t eng = ibus.readChannel(CH_ENGINE);
@@ -171,16 +148,26 @@ void updateRcCache()
   uint16_t sta = ibus.readChannel(CH_STARTER);
 
   // ==================================================
-  // PLAUSIBILITY
+  // VALIDATION
   // ==================================================
-  if (thr < 900 || thr > 2100) return;
-  if (str < 900 || str > 2100) return;
-  if (eng < 900 || eng > 2100) return;
-  if (ign < 900 || ign > 2100) return;
-  if (sta < 900 || sta > 2100) return;
+  bool valid =
+    (thr >= 900 && thr <= 2100) &&
+    (str >= 900 && str <= 2100) &&
+    (eng >= 900 && eng <= 2100) &&
+    (ign >= 900 && ign <= 2100) &&
+    (sta >= 900 && sta <= 2100);
+
+  if (!valid)
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[RC] INVALID"));
+#endif
+    requestFault(FaultCode::COMMS_TIMEOUT);
+    return;
+  }
 
   // ==================================================
-  // 🔴 RATE LIMIT FILTER (แทน spike filter)
+  // RATE LIMIT
   // ==================================================
   static uint16_t lastThr = 1500;
   static uint16_t lastStr = 1500;
@@ -200,7 +187,7 @@ void updateRcCache()
   str = lastStr + dStr;
 
   // ==================================================
-  // UPDATE CACHE
+  // APPLY
   // ==================================================
   rcThrottle = thr;
   rcSteer    = str;

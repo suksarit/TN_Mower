@@ -72,7 +72,7 @@ void updateThermalManager(uint32_t now)
 #if DEBUG_SERIAL
     Serial.println(F("[THERMAL] TEMP SENSOR FAULT"));
 #endif
-    latchFault(FaultCode::SENSOR_TIMEOUT);
+    requestFault(FaultCode::SENSOR_TIMEOUT);
   }
 
   int tMax = max(tL, tR);
@@ -123,7 +123,7 @@ void updateThermalManager(uint32_t now)
 #if DEBUG_SERIAL
       Serial.println(F("[THERMAL] CURRENT SENSOR FAULT"));
 #endif
-      latchFault(FaultCode::SENSOR_TIMEOUT);
+      requestFault(FaultCode::SENSOR_TIMEOUT);
       c = CURRENT_MAX_VALID;
     }
 
@@ -155,7 +155,7 @@ void updateThermalManager(uint32_t now)
 #if DEBUG_SERIAL
     Serial.println(F("[THERMAL] VOLT SENSOR FAULT"));
 #endif
-    latchFault(FaultCode::SENSOR_TIMEOUT);
+    requestFault(FaultCode::SENSOR_TIMEOUT);
     v = 24.0f;
   }
 

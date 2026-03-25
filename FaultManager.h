@@ -1,5 +1,5 @@
 // ============================================================================
-// FaultManager.h 
+// FaultManager.h (ECU STYLE)
 // ============================================================================
 
 #pragma once
@@ -7,21 +7,36 @@
 #include <Arduino.h>
 #include "SystemTypes.h"
 
-// ================= CORE =================
+// ======================================================
+// CORE API (ห้าม bypass)
+// ======================================================
 void initFaultSystem();
 void latchFault(FaultCode code);
+void requestFault(FaultCode code);  
 void clearFault(void);
-void backgroundFaultEEPROMTask(uint32_t now);
-
-// ================= WATCHDOG =================
-void monitorSubsystemWatchdogs(uint32_t now);
-
-// ================= QUERY =================
 bool isFaultActive(void);
 FaultCode getActiveFault(void);
-bool shouldStopSystem(void);
 
-// ================= LOG =================
+// ======================================================
+// CONTROL POLICY
+// ======================================================
+bool canSystemRun(void);     
+bool isEmergency(void);
+
+// ======================================================
+// WATCHDOG
+// ======================================================
+void monitorSubsystemWatchdogs(uint32_t now);
+
+// ======================================================
+// BACKGROUND
+// ======================================================
+void processFaultReset(uint32_t now);
+void backgroundFaultEEPROMTask(uint32_t now);
+
+// ======================================================
+// LOG
+// ======================================================
 uint8_t getFaultLogCount();
 
 struct FaultRecord
@@ -34,6 +49,5 @@ struct FaultRecord
   uint16_t counter;
 };
 
-bool getFaultLog(uint8_t index, FaultRecord& out); 
-
+bool getFaultLog(uint8_t index, FaultRecord& out);
 
