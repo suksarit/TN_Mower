@@ -1,0 +1,63 @@
+# 🚜 TN_Mower (โปรแกรมรถตัดหญ้าบังคับแยกโมดูล)
+
+![C++](https://img.shields.io/badge/Language-C++-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Hardware](https://img.shields.io/badge/Hardware-Microcontroller-orange.svg)
+
+โปรเจกต์ซอฟต์แวร์สำหรับควบคุม **รถตัดหญ้าบังคับวิทยุ (Remote-Controlled Lawn Mower)** พัฒนาด้วยภาษา C/C++ โดยออกแบบสถาปัตยกรรมซอฟต์แวร์แบบแยกโมดูล (Modular Design) เพื่อประสิทธิภาพสูงสุด ง่ายต่อการบำรุงรักษา และเน้นความปลอดภัยในการทำงานขั้นสูง
+
+ระบบนี้รองรับการควบคุมการขับเคลื่อนที่ซับซ้อน การจัดการความปลอดภัยของฮาร์ดแวร์ และการเชื่อมต่อกับอุปกรณ์เสริมระดับโปร เช่น ระบบ RTK GPS และ STorM32 Gimbal
+
+---
+
+## ✨ ฟีเจอร์หลัก (Key Features)
+
+* **🏗️ Modular Architecture:** โครงสร้างโค้ดแยกอิสระตามหน้าที่การทำงาน (เช่น `DriveController`, `InputMixer`, `CommsManager`)
+* **🛡️ Advanced Safety System:** * `SafetyManager` & `FaultManager`: ตรวจจับและจัดการข้อผิดพลาดของระบบแบบเรียลไทม์
+  * `ThermalManager`: ป้องกันความร้อนสะสมในระบบ
+  * `VoltageManager` & `CurrentCalibration`: ตรวจสอบกระแสไฟและแรงดัน ป้องกันมอเตอร์และแบตเตอรี่เสียหาย
+  * `DriveProtection` & `AutoReverse`: ระบบป้องกันการชนและถอยหลังอัตโนมัติ
+* **⚙️ Smart Drive Control:** * `TractionControl`: ควบคุมการยึดเกาะถนน ลดอาการล้อหมุนฟรี
+  * `SpeedController` & `DriveRamp`: ควบคุมการเร่งและเบรกอย่างนุ่มนวล ลดภาระของเกียร์และมอเตอร์
+* **📡 Telemetry & Comms:** ระบบส่งข้อมูลสถานะตัวรถกลับไปยังผู้ควบคุม
+* **🎥 Gimbal Integration:** รองรับการควบคุมผ่าน `Storm32Controller` สำหรับกล้องหรือเซนเซอร์
+
+---
+
+## 🛠️ ฮาร์ดแวร์ที่แนะนำ (Hardware Recommendations)
+
+ระบบถูกออกแบบมาให้ยืดหยุ่นและรองรับฮาร์ดแวร์ประสิทธิภาพสูง:
+
+* **Microcontroller / Flight Controller:** รองรับบอร์ดตระกูล Arduino (เช่น Mega 2560) หรือบอร์ดประสิทธิภาพสูงอย่าง Matek H743 (รัน ArduPilot)
+* **Motor Drivers:** รองรับโมดูลขับมอเตอร์กระแสสูง เช่น **BTS7960**, **HC160** หรือที่เทียบเท่า
+* **RC Receiver Protocols:** รองรับโปรโตคอลการสื่อสารความหน่วงต่ำ เช่น **iBUS** หรือ **CRSF (Crossfire)**
+* **Positioning (Optional):** รองรับการต่อยอดใช้งานร่วมกับโมดูล **RTK GPS** (เช่น u-blox หรือ Unicore Communications) เพื่อความแม่นยำระดับเซนติเมตร
+* **Gimbal Controller:** **STorM32 BGC** สำหรับการรักษาระดับกล้องหรือเซนเซอร์นำทาง
+
+---
+
+## 📂 โครงสร้างซอฟต์แวร์ (Software Architecture)
+
+| โมดูล | หน้าที่การทำงาน |
+| :--- | :--- |
+| `TN_Mower.ino` | ไฟล์หลัก (Main loop) สำหรับการประมวลผลระบบทั้งหมด |
+| `GlobalState` | จัดการตัวแปรและสถานะโดยรวมของรถตัดหญ้า |
+| `InputMixer` | ประมวลผลและผสมสัญญาณจากรีโมท (RC Channel) |
+| `MotorDriver` / `MotorOutput` | แปลงคำสั่งควบคุมเป็นสัญญาณ PWM ส่งไปยัง Motor Driver |
+| `EngineManager` / `FanManager` | ควบคุมการทำงานของเครื่องยนต์ตัดหญ้าและระบบระบายความร้อน |
+| `HardwareConfig.h` | ไฟล์รวมการตั้งค่าพิน (Pinout) และพารามิเตอร์ของฮาร์ดแวร์ |
+
+---
+
+## 🚀 การติดตั้งและใช้งาน (Getting Started)
+
+1. **โคลนโปรเจกต์ (Clone the repository):**
+   ```bash
+   git clone [https://github.com/suksarit/TN_Mower.git](https://github.com/suksarit/TN_Mower.git)
+2. เปิดโปรเจกต์: เปิดไฟล์ TN_Mower.ino ด้วย Arduino IDE หรือ PlatformIO
+
+3. ตั้งค่าฮาร์ดแวร์: ตรวจสอบและแก้ไขการกำหนดพิน (Pin Assignments) ในไฟล์ HardwareConfig.h ให้ตรงกับบอร์ดและ Wiring ของคุณ
+
+4. คอมไพล์และอัปโหลด: เลือกบอร์ดที่ใช้งานและทำการอัปโหลดโค้ดลงไมโครคอนโทรลเลอร์
+
+5. คู่มือเพิ่มเติม: อ่านการตั้งค่าเชิงลึกได้ที่ไฟล์ คู่มือ.txt
