@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveProtection.cpp (FINAL - CLEAN + NO DUPLICATE + STABLE)
+// DriveProtection.cpp 
 // ============================================================================
 
 #include <Arduino.h>
@@ -26,6 +26,9 @@ static float slipRatio = 0.0f;
 
 static uint32_t lastTime_ms = 0;
 static float stallEnergy = 0.0f;
+
+// 🔴 เพิ่ม: สำหรับกัน jerk imbalance
+static float lastCorr = 0.0f;
 
 // ============================================================================
 // TERRAIN UPDATE
@@ -146,7 +149,7 @@ void applyDriveLimits(float &tL,
 }
 
 // ============================================================================
-// IMBALANCE
+// IMBALANCE (🔥 ปรับใหม่ให้เนียน + ไม่กระชาก)
 // ============================================================================
 
 void detectSideImbalanceAndSteer(float &tL,
@@ -154,22 +157,64 @@ void detectSideImbalanceAndSteer(float &tL,
                                  float curL_A,
                                  float curR_A)
 {
+  // --------------------------------------------------
+  // LOW POWER → SKIP
+  // --------------------------------------------------
   if (abs(tL) < 50 && abs(tR) < 50)
+    return;
+
+  // --------------------------------------------------
+  // STRONG TURN → SKIP (กัน over-correct)
+  // --------------------------------------------------
+  if (abs(tL - tR) > 300)
     return;
 
   float diff = curL_A - curR_A;
 
+  // --------------------------------------------------
+  // DEAD BAND
+  // --------------------------------------------------
   if (fabs(diff) < 15.0f)
     return;
 
+  // --------------------------------------------------
+  // GAIN (adaptive)
+  // --------------------------------------------------
   float terrainFactor = constrain(terrainLoad / CUR_WARN_A, 0.5f, 1.5f);
-  float gain = 0.4f * terrainFactor;
 
-  float corr = constrain(diff * gain, -100.0f, 100.0f);
+  float speedFactor =
+    constrain((fabs(tL) + fabs(tR)) * 0.5f / PWM_TOP, 0.3f, 1.0f);
 
+  float gain = 0.4f * terrainFactor * speedFactor;
+
+  // --------------------------------------------------
+  // RAW CORRECTION
+  // --------------------------------------------------
+  float corr = diff * gain;
+
+  // --------------------------------------------------
+  // 🔴 RATE LIMIT (กัน jerk)
+  // --------------------------------------------------
+  float d = corr - lastCorr;
+  const float MAX_STEP = 20.0f;
+
+  if (d > MAX_STEP) d = MAX_STEP;
+  if (d < -MAX_STEP) d = -MAX_STEP;
+
+  corr = lastCorr + d;
+  lastCorr = corr;
+
+  corr = constrain(corr, -100.0f, 100.0f);
+
+  // --------------------------------------------------
+  // APPLY
+  // --------------------------------------------------
   float newL = tL - corr;
   float newR = tR + corr;
 
+  // --------------------------------------------------
+  // SIGN PROTECTION
+  // --------------------------------------------------
   if ((tL > 0 && newL < 0) || (tL < 0 && newL > 0))
     newL = 0;
 
