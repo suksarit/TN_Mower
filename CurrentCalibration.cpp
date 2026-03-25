@@ -1,5 +1,5 @@
 // ============================================================================
-// CurrentCalibration.cpp (FINAL - ROBUST + FAULT SAFE + ANTI-DRIFT)
+// CurrentCalibration.cpp 
 // ============================================================================
 
 #include <Arduino.h>

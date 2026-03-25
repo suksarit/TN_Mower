@@ -1,5 +1,5 @@
 // ========================================================================================
-// GlobalState.h  (TN MOWER GLOBAL STATE - FIXED CLEAN)
+// GlobalState.h  
 // ========================================================================================
 
 #pragma once
@@ -23,6 +23,7 @@
 extern float terrainDragAvg;
 extern float controlDt_s;
 extern KillType killRequest;
+extern uint32_t rcLastFrame_ms;
 
 // ======================================================
 // DRIVER STATE ENUM

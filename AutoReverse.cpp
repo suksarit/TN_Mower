@@ -54,7 +54,6 @@ void startAutoReverse(uint32_t now)
 
 void applyAutoReverse(float &tL, float &tR, uint32_t now)
 {
-  // 🔴 safety cut
   if (systemState != SystemState::ACTIVE ||
       driverState != DriverState::ACTIVE)
   {
@@ -65,31 +64,25 @@ void applyAutoReverse(float &tL, float &tR, uint32_t now)
   if (!autoReverseActive)
     return;
 
-  uint32_t dt = now - reverseStart_ms;
+  uint32_t dt_ms = now - reverseStart_ms;
 
   switch (reversePhase)
   {
-    // --------------------------------------------------
-    // PHASE 0: PAUSE
-    // --------------------------------------------------
     case 0:
       tL = 0;
       tR = 0;
 
-      if (dt > PAUSE_DURATION_MS)
+      if (dt_ms > PAUSE_DURATION_MS)
       {
         reversePhase = 1;
         reverseStart_ms = now;
       }
       break;
 
-    // --------------------------------------------------
-    // PHASE 1: REVERSE (RAMP)
-    // --------------------------------------------------
     case 1:
     {
-      // ramp power
-      reversePower += REVERSE_RAMP_RATE;
+      // 🔴 FIX: time-based ramp
+      reversePower += REVERSE_RAMP_RATE * controlDt_s;
       reversePower = constrain(reversePower, 0.0f, REVERSE_POWER_MAX);
 
       float power = PWM_TOP * reversePower;
@@ -97,7 +90,7 @@ void applyAutoReverse(float &tL, float &tR, uint32_t now)
       tL = -power;
       tR = -power;
 
-      if (dt > REVERSE_DURATION_MS)
+      if (dt_ms > REVERSE_DURATION_MS)
       {
         reversePhase = 2;
         reverseStart_ms = now;
@@ -105,9 +98,6 @@ void applyAutoReverse(float &tL, float &tR, uint32_t now)
       break;
     }
 
-    // --------------------------------------------------
-    // PHASE 2: EXIT
-    // --------------------------------------------------
     case 2:
       tL = 0;
       tR = 0;

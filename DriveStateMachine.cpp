@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveStateMachine.cpp (TORQUE SYSTEM SAFE - NO CONTROL CONFLICT)
+// DriveStateMachine.cpp 
 // ============================================================================
 
 #include <Arduino.h>

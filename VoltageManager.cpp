@@ -1,12 +1,12 @@
 // ============================================================================
-// VoltageManager.cpp (FINAL - INDUSTRIAL ROBUST + FAULT SAFE)
+// VoltageManager.cpp 
 // ============================================================================
 
 #include <Arduino.h>
 #include "VoltageManager.h"
 #include "GlobalState.h"
 #include "HardwareConfig.h"
-#include "FaultManager.h"   // 🔴 เพิ่ม
+#include "FaultManager.h"   
 
 void updateVoltageWarning(uint32_t now)
 {

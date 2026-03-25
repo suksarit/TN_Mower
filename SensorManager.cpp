@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp (FIXED - STABLE + FAILSAFE + REAL FILTER)
+// SensorManager.cpp 
 // ============================================================================
 
 #include <Arduino.h>
@@ -371,4 +371,6 @@ void sensorTask(uint32_t now)
       latchFault(FaultCode::SENSOR_TIMEOUT);
   }
 }
+
+
 

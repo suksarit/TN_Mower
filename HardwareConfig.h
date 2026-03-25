@@ -1,6 +1,5 @@
 // ========================================================================================
-// HardwareConfig.h  (TN MOWER - GLOBAL HARDWARE / LIMIT CONFIG)
-// CLEAN + SINGLE SOURCE (NO DUPLICATE DEFINE)
+// HardwareConfig.h  
 // ========================================================================================
 
 #pragma once

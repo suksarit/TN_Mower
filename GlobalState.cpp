@@ -1,5 +1,5 @@
 // ========================================================================================
-// GlobalState.cpp  (TN MOWER GLOBAL STATE INSTANCE)
+// GlobalState.cpp  
 // ========================================================================================
 
 #include "GlobalState.h"
@@ -8,17 +8,38 @@
 // GLOBAL BUFFER INSTANCE
 // ==================================================
 
-// ใช้กับ ISR → ต้อง volatile
-volatile DriveBuffer driveBufISR = {0,0,0,0};
+// 🔴 ใช้กับ ISR → ต้อง volatile เท่านั้น
+volatile DriveBuffer driveBufISR = {0.0f, 0.0f, 0.0f, 0.0f};
 
-// ใช้ใน main loop → ไม่ต้อง volatile
-DriveBuffer driveBufMain = {0,0,0,0};
+// 🔴 ใช้ใน main loop → ไม่ต้อง volatile
+DriveBuffer driveBufMain = {0.0f, 0.0f, 0.0f, 0.0f};
 
 // ==================================================
-// GLOBAL VARIABLES (DEFINE HERE ONLY)
+// CONTROL / PHYSICS STATE
 // ==================================================
 
+// 🔴 ใช้ใน control loop (ต้องเสถียร)
+float controlDt_s = 0.02f;   // default = 20ms (กันค่า 0 ตอน boot)
+
+// 🔴 ค่าเฉลี่ยแรงต้าน (ใช้กับ traction / load)
 float terrainDragAvg = 0.0f;
-float controlDt_s = 0.0f;
 
+// ==================================================
+// SYSTEM CONTROL STATE
+// ==================================================
+
+// 🔴 kill system (ใช้ข้าม module)
 KillType killRequest = KillType::NONE;
+
+// ==================================================
+// 🔴 RC / COMM STATE (INDUSTRIAL - FRAME BASED)
+// ==================================================
+
+// 🔴 timestamp ของ "frame ล่าสุดที่ valid"
+// ใช้ตรวจ FREEZE / TIMEOUT
+uint32_t rcLastFrame_ms = 0;
+
+// ==================================================
+// END OF FILE
+// ==================================================
+

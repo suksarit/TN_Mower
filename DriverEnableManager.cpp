@@ -1,5 +1,5 @@
 // ============================================================================
-// DriverEnableManager.cpp (FIXED - STABLE ENABLE + NO GLITCH)
+// DriverEnableManager.cpp 
 // ============================================================================
 
 #include "DriverEnableManager.h"

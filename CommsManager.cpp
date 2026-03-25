@@ -1,5 +1,5 @@
 // ============================================================================
-// CommsManager.cpp (FIXED - STABLE + NO FALSE FAULT + REAL FIELD READY)
+// CommsManager.cpp  
 // ============================================================================
 
 #include <Arduino.h>
@@ -13,24 +13,19 @@
 #include "CommsManager.h"
 
 // ============================================================================
-// UPDATE COMMUNICATION STATE
+// UPDATE COMMUNICATION STATE (FRAME-BASED INDUSTRIAL)
 // ============================================================================
-
 void updateComms(uint32_t now)
 {
   static uint8_t ibusLostCnt = 0;
-
-  static uint32_t lastFrame_ms = 0;
   static bool frameInitialized = false;
-
   static uint8_t frameLostCnt = 0;
 
   constexpr uint16_t RC_FRAME_MAX_INTERVAL = 60;
 
   // ==================================================
-  // 🔴 FIXED PARSE BUDGET (กัน noise ทำ loop ค้าง)
+  // PARSE BUDGET (กัน loop ค้าง)
   // ==================================================
-
   constexpr uint8_t PARSE_BUDGET = 24;
   uint8_t parseBudget = PARSE_BUDGET;
 
@@ -42,7 +37,6 @@ void updateComms(uint32_t now)
 
     lastIbusByte_ms = now;
 
-    // ใช้ channel validity เป็น frame indicator
     uint16_t test = ibus.readChannel(CH_THROTTLE);
 
     if (test >= 900 && test <= 2100)
@@ -50,20 +44,18 @@ void updateComms(uint32_t now)
   }
 
   // ==================================================
-  // FRAME HEARTBEAT (VALID ONLY)
+  // 🔴 FRAME HEARTBEAT (GLOBAL TIMESTAMP)
   // ==================================================
-
   if (frameValid)
   {
-    lastFrame_ms = now;
+    rcLastFrame_ms = now;   // 🔴 สำคัญที่สุด
     frameInitialized = true;
   }
 
   // ==================================================
-  // 🔴 FRAME TIMEOUT WITH DEBOUNCE + STARTUP SAFE
+  // FRAME TIMEOUT (DEBOUNCE)
   // ==================================================
-
-  if (frameInitialized && (now - lastFrame_ms > RC_FRAME_MAX_INTERVAL))
+  if (frameInitialized && (now - rcLastFrame_ms > RC_FRAME_MAX_INTERVAL))
   {
     if (++frameLostCnt >= 3)
     {
@@ -82,7 +74,6 @@ void updateComms(uint32_t now)
   // ==================================================
   // RECOVERY
   // ==================================================
-
   if (frameValid)
   {
     if (ibusCommLost)
@@ -103,7 +94,6 @@ void updateComms(uint32_t now)
   // ==================================================
   // SOFT LOST
   // ==================================================
-
   if (now - lastIbusByte_ms > 120)
   {
     if (++ibusLostCnt >= 3)
@@ -126,7 +116,6 @@ void updateComms(uint32_t now)
   // ==================================================
   // HARD LOST
   // ==================================================
-
   if (now - lastIbusByte_ms > IBUS_TIMEOUT_MS)
   {
 #if DEBUG_SERIAL
@@ -139,7 +128,6 @@ void updateComms(uint32_t now)
   // ==================================================
   // HEALTHY
   // ==================================================
-
   if (!ibusCommLost)
   {
     wdComms.lastUpdate_ms = now;
@@ -147,16 +135,35 @@ void updateComms(uint32_t now)
 }
 
 // ============================================================================
-// UPDATE RC CACHE
+// UPDATE RC CACHE (INDUSTRIAL - FRAME BASED)
 // ============================================================================
-
 void updateRcCache()
 {
   uint32_t now = millis();
 
+  // ==================================================
+  // HARD GUARD
+  // ==================================================
   if (ibusCommLost)
     return;
 
+  // ==================================================
+  // 🔴 FREEZE DETECTION (REAL INDUSTRIAL)
+  // ==================================================
+  constexpr uint32_t FREEZE_TIMEOUT = 150;
+
+  if (now - rcLastFrame_ms > FREEZE_TIMEOUT)
+  {
+#if DEBUG_SERIAL
+    Serial.println(F("[RC] FREEZE (FRAME TIMEOUT)"));
+#endif
+    latchFault(FaultCode::COMMS_TIMEOUT);
+    return;
+  }
+
+  // ==================================================
+  // READ CHANNEL
+  // ==================================================
   uint16_t thr = ibus.readChannel(CH_THROTTLE);
   uint16_t str = ibus.readChannel(CH_STEER);
   uint16_t eng = ibus.readChannel(CH_ENGINE);
@@ -166,7 +173,6 @@ void updateRcCache()
   // ==================================================
   // PLAUSIBILITY
   // ==================================================
-
   if (thr < 900 || thr > 2100) return;
   if (str < 900 || str > 2100) return;
   if (eng < 900 || eng > 2100) return;
@@ -174,24 +180,28 @@ void updateRcCache()
   if (sta < 900 || sta > 2100) return;
 
   // ==================================================
-  // SPIKE FILTER
+  // 🔴 RATE LIMIT FILTER (แทน spike filter)
   // ==================================================
-
   static uint16_t lastThr = 1500;
   static uint16_t lastStr = 1500;
 
-  constexpr uint16_t SPIKE = 300;
+  constexpr int MAX_STEP = 120;
 
-  if (abs((int)thr - (int)lastThr) > SPIKE)
-    thr = lastThr;
+  int dThr = (int)thr - (int)lastThr;
+  int dStr = (int)str - (int)lastStr;
 
-  if (abs((int)str - (int)lastStr) > SPIKE)
-    str = lastStr;
+  if (dThr > MAX_STEP) dThr = MAX_STEP;
+  if (dThr < -MAX_STEP) dThr = -MAX_STEP;
+
+  if (dStr > MAX_STEP) dStr = MAX_STEP;
+  if (dStr < -MAX_STEP) dStr = -MAX_STEP;
+
+  thr = lastThr + dThr;
+  str = lastStr + dStr;
 
   // ==================================================
   // UPDATE CACHE
   // ==================================================
-
   rcThrottle = thr;
   rcSteer    = str;
   rcEngine   = eng;
@@ -200,24 +210,5 @@ void updateRcCache()
 
   lastThr = thr;
   lastStr = str;
-
-  // ==================================================
-  // 🔴 FREEZE DETECTION (FIXED - FRAME BASED)
-  // ==================================================
-
-  static uint32_t lastAlive_ms = 0;
-
-  // มีข้อมูล valid = ยัง alive
-  lastAlive_ms = now;
-
-  constexpr uint32_t FREEZE_TIMEOUT = 1500;
-
-  if (now - lastAlive_ms > FREEZE_TIMEOUT)
-  {
-#if DEBUG_SERIAL
-    Serial.println(F("[RC] FREEZE (NO FRAME)"));
-#endif
-    latchFault(FaultCode::COMMS_TIMEOUT);
-  }
 }
 

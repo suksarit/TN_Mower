@@ -1,5 +1,5 @@
 // ============================================================================
-// TelemetryManager.cpp (FINAL - COMPLETE + REAL SAFETY)
+// TelemetryManager.cpp 
 // ============================================================================
 
 #include "SystemTypes.h"

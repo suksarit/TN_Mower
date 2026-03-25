@@ -1,5 +1,5 @@
 // ============================================================================
-// SafetyManager.cpp (INDUSTRIAL HARDENED - NO FLAP / TRUE LATCH / REV SAFE)
+// SafetyManager.cpp 
 // ============================================================================
 
 #include <Arduino.h>
