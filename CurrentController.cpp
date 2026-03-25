@@ -32,82 +32,86 @@ void applyCurrentPID(float targetCurrentL, float targetCurrentR)
   // TIME
   // ==================================================
   float dt = controlDt_s;
-
   if (dt <= 0.0001f)
     return;
 
   // ==================================================
-  // MEASURE CURRENT (SAFE)
+  // MEASURE CURRENT
   // ==================================================
   float measL = getMotorCurrentSafeL();
   float measR = getMotorCurrentSafeR();
 
   // ==================================================
-  // ERROR (Amp)
+  // ERROR
   // ==================================================
   float errL = targetCurrentL - measL;
   float errR = targetCurrentR - measR;
 
   // ==================================================
-  // PID CONFIG (ต้องจูน)
+  // PID CONFIG (ปรับให้เสถียรขึ้น)
   // ==================================================
-  constexpr float KP = 0.7f;
-  constexpr float KI = 0.15f;
-  constexpr float KD = 0.01f;
+  constexpr float KP = 0.6f;
+  constexpr float KI = 0.12f;
+  constexpr float KD = 0.005f;
 
   // ==================================================
-  // INTEGRATOR (ANTI-WINDUP)
+  // 🔴 DERIVATIVE FILTER (สำคัญมาก)
   // ==================================================
-  constexpr float I_LIMIT = 40.0f;   // Amp·s
+  static float dFiltL = 0;
+  static float dFiltR = 0;
 
-  iErrL += errL * dt;
-  iErrR += errR * dt;
+  float dRawL = (errL - prevErrL) / dt;
+  float dRawR = (errR - prevErrR) / dt;
 
-  iErrL = constrain(iErrL, -I_LIMIT, I_LIMIT);
-  iErrR = constrain(iErrR, -I_LIMIT, I_LIMIT);
-
-  // ==================================================
-  // DERIVATIVE
-  // ==================================================
-  float dErrL = (errL - prevErrL) / dt;
-  float dErrR = (errR - prevErrR) / dt;
+  dFiltL = dFiltL * 0.7f + dRawL * 0.3f;
+  dFiltR = dFiltR * 0.7f + dRawR * 0.3f;
 
   prevErrL = errL;
   prevErrR = errR;
 
   // ==================================================
-  // PID OUTPUT (Amp → PWM)
+  // 🔴 INTEGRATOR (CONDITIONAL ANTI-WINDUP)
   // ==================================================
-  float outL = KP * errL + KI * iErrL + KD * dErrL;
-  float outR = KP * errR + KI * iErrR + KD * dErrR;
+  constexpr float I_LIMIT = 30.0f;
+
+  bool satL = (curL >= PWM_TOP || curL <= -PWM_TOP);
+  bool satR = (curR >= PWM_TOP || curR <= -PWM_TOP);
+
+  if (!satL)
+    iErrL += errL * dt;
+
+  if (!satR)
+    iErrR += errR * dt;
+
+  iErrL = constrain(iErrL, -I_LIMIT, I_LIMIT);
+  iErrR = constrain(iErrR, -I_LIMIT, I_LIMIT);
 
   // ==================================================
-  // SCALE TO PWM DOMAIN
+  // PID OUTPUT
   // ==================================================
-  constexpr float CURRENT_TO_PWM = 40.0f; // 🔴 ต้องจูน
+  float outL = KP * errL + KI * iErrL + KD * dFiltL;
+  float outR = KP * errR + KI * iErrR + KD * dFiltR;
 
-  curL += outL * CURRENT_TO_PWM;
-  curR += outR * CURRENT_TO_PWM;
+  // ==================================================
+  // 🔴 FEEDFORWARD (ช่วย response)
+  // ==================================================
+  constexpr float FF_GAIN = 20.0f;
+
+  float ffL = targetCurrentL * FF_GAIN;
+  float ffR = targetCurrentR * FF_GAIN;
+
+  // ==================================================
+  // 🔴 FINAL OUTPUT (ไม่ใช้ += แล้ว)
+  // ==================================================
+  float pwmL = ffL + outL * 25.0f;
+  float pwmR = ffR + outR * 25.0f;
 
   // ==================================================
   // LIMIT
   // ==================================================
-  curL = constrain(curL, -PWM_TOP, PWM_TOP);
-  curR = constrain(curR, -PWM_TOP, PWM_TOP);
-
-  // ==================================================
-  // HARD CLAMP ANTI-WINDUP (สำคัญ)
-  // ==================================================
-  if (curL == PWM_TOP || curL == -PWM_TOP)
-    iErrL *= 0.9f;
-
-  if (curR == PWM_TOP || curR == -PWM_TOP)
-    iErrR *= 0.9f;
+  curL = constrain(pwmL, -PWM_TOP, PWM_TOP);
+  curR = constrain(pwmR, -PWM_TOP, PWM_TOP);
 }
-
-// ============================================================================
-// RESET CURRENT LOOP (CRITICAL SAFETY)
-// ============================================================================
 
 void resetCurrentLoop()
 {

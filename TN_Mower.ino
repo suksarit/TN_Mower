@@ -280,8 +280,7 @@ int freeRam() {
 #endif
 
 
-void setupControlTimer()
-{
+void setupControlTimer() {
   cli();
 
   TCCR2A = 0;
@@ -302,10 +301,8 @@ void setupControlTimer()
 }
 
 
-bool driveSafetyGuard()
-{
-  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED)
-  {
+bool driveSafetyGuard() {
+  if (systemState == SystemState::FAULT || driveState == DriveState::LOCKED) {
     // 🔴 ห้ามแตะ PWM
     return false;
   }
@@ -313,8 +310,7 @@ bool driveSafetyGuard()
   bool thrNeutral = neutral(rcThrottle);
   bool strNeutral = neutral(rcSteer);
 
-  if (driverRearmRequired)
-  {
+  if (driverRearmRequired) {
     if (thrNeutral && strNeutral)
       driverRearmRequired = false;
 
@@ -324,8 +320,7 @@ bool driveSafetyGuard()
   return true;
 }
 
-void handleFaultImmediateCut()
-{
+void handleFaultImmediateCut() {
 #if DEBUG_SERIAL
   static bool printed = false;
   if (!printed) {
@@ -434,10 +429,22 @@ void updateSystemState(uint32_t now) {
     // --------------------------------------------
     case SystemState::ACTIVE:
       {
+        static uint32_t ibusLostStart = 0;
+
         if (ibusCommLost) {
-          systemState = SystemState::INIT;
-          ibusStableStart_ms = 0;
+          if (ibusLostStart == 0)
+            ibusLostStart = now;
+
+          // 🔴 ต้องหลุดต่อเนื่อง >300ms ถึง reset
+          if (now - ibusLostStart > 300) {
+            systemState = SystemState::INIT;
+            ibusStableStart_ms = 0;
+            ibusLostStart = 0;
+          }
+        } else {
+          ibusLostStart = 0;
         }
+
         break;
       }
 
@@ -472,27 +479,21 @@ void taskComms(uint32_t now) {
 
 void taskDriveEvents(uint32_t now)
 {
-  // ==================================================
-  // SNAPSHOT CURRENT (ใช้ค่าเดียวกับ CONTROL)
-  // ==================================================
-  // 🔴 ต้องใช้ filtered current เท่านั้น
+  cli();  // 🔴 lock interrupt
+
   curA_snapshot[0] = getMotorCurrentL();
   curA_snapshot[1] = getMotorCurrentR();
 
-  // ช่องอื่น (ถ้ามีจริง)
+  sei();  // 🔴 unlock
+
   curA_snapshot[2] = curA[2];
   curA_snapshot[3] = curA[3];
 
-  // ==================================================
-  // ENGINE STATE / AUTO ZERO
-  // ==================================================
   updateEngineState(now);
   idleCurrentAutoRezero(now);
-
 }
 
-void taskSafety(uint32_t now)
-{
+void taskSafety(uint32_t now) {
   SafetyInput sin;
 
   sin.curA[0] = curA[0];
@@ -522,11 +523,9 @@ void taskSafety(uint32_t now)
     lastDriveEvent);
 }
 
-bool taskSystemGate(uint32_t now, uint32_t loopStart_us)
-{
+bool taskSystemGate(uint32_t now, uint32_t loopStart_us) {
   // 🔴 HARD KILL PRIORITY สูงสุด
-  if (killRequest == KillType::HARD)
-  {
+  if (killRequest == KillType::HARD) {
     handleFaultImmediateCut();
 
 #if TELEMETRY_CSV
@@ -539,8 +538,7 @@ bool taskSystemGate(uint32_t now, uint32_t loopStart_us)
     return false;
   }
 
-  if (systemState != SystemState::ACTIVE)
-  {
+  if (systemState != SystemState::ACTIVE) {
     digitalWrite(PIN_DRV_ENABLE, LOW);
 
 #if TELEMETRY_CSV
@@ -650,39 +648,29 @@ void taskLoopSupervisor(uint32_t loopStart_us) {
     latchFault(FaultCode::LOOP_OVERRUN);
 }
 
-void taskWatchdog()
-{
+void taskWatchdog() {
   int freeMem = freeRam();
 
-  if (freeMem < 600)
-  {
+  if (freeMem < 600) {
     latchFault(FaultCode::LOGIC_WATCHDOG);
   }
 
   bool wdHealthy =
-    !wdSensor.faulted &&
-    !wdComms.faulted &&
-    !wdDrive.faulted &&
-    !wdBlade.faulted &&
-    !faultLatched;
+    !wdSensor.faulted && !wdComms.faulted && !wdDrive.faulted && !wdBlade.faulted && !faultLatched;
 
   // 🔴 เพิ่มเงื่อนไข: system ต้อง ACTIVE เท่านั้น
-  if (wdHealthy && systemState == SystemState::ACTIVE)
-  {
+  if (wdHealthy && systemState == SystemState::ACTIVE) {
     wdt_reset();
 
     digitalWrite(PIN_HW_WD_HB,
                  !digitalRead(PIN_HW_WD_HB));
-  }
-  else
-  {
+  } else {
     // 🔴 ไม่ feed → MCU reset
     digitalWrite(PIN_HW_WD_HB, LOW);
   }
 }
 
-void taskBackground(uint32_t now)
-{
+void taskBackground(uint32_t now) {
   // WATCHDOG (central)
   monitorSubsystemWatchdogs(now);
 
@@ -701,6 +689,13 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
+
+    // 🔴 reset ramp state ด้วย (กันเด้งตอนกลับมา)
+    static float lastTargetL = 0;
+    static float lastTargetR = 0;
+    lastTargetL = 0;
+    lastTargetR = 0;
+
     return;
   }
 
@@ -726,16 +721,47 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   // ==================================================
   updateDriveTarget();
 
+  // ==================================================
+  // 🔴 FIX 3: RAMP LIMIT (กันกระชากจริง)
+  // ==================================================
+  static float lastTargetL = 0.0f;
+  static float lastTargetR = 0.0f;
+
+  const float maxStep = 0.06f;  // 🔴 ปรับได้ (ยิ่งน้อยยิ่งนุ่ม)
+
+  float dL = targetL - lastTargetL;
+  float dR = targetR - lastTargetR;
+
+  if (dL > maxStep) dL = maxStep;
+  if (dL < -maxStep) dL = -maxStep;
+
+  if (dR > maxStep) dR = maxStep;
+  if (dR < -maxStep) dR = -maxStep;
+
+  targetL = lastTargetL + dL;
+  targetR = lastTargetR + dR;
+
+  lastTargetL = targetL;
+  lastTargetR = targetR;
+
+  // ==================================================
+  // BUFFER TARGET (หลัง ramp เท่านั้น)
+  // ==================================================
   driveBufISR.targetL = targetL;
   driveBufISR.targetR = targetR;
 
   // ==================================================
-  // FIX 3: SYSTEM STATE GUARD
+  // FIX 4: SYSTEM STATE GUARD
   // ==================================================
   if (systemState != SystemState::ACTIVE)
   {
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
+
+    // 🔴 reset ramp กันค้าง
+    lastTargetL = 0;
+    lastTargetR = 0;
+
     return;
   }
 
@@ -745,15 +771,29 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   runDrive(now);
 
   // ==================================================
-  // 🔴 FIX 4: FINAL GUARD (กันหลุดหลัง runDrive)
+  // 🔴 FIX 5: FINAL GUARD (กันหลุดหลัง runDrive)
   // ==================================================
   if (systemState != SystemState::ACTIVE ||
       driveState == DriveState::LOCKED)
   {
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
+
+    // 🔴 reset ramp กันเด้งตอน unlock
+    lastTargetL = 0;
+    lastTargetR = 0;
+
     return;
   }
+
+  // ==================================================
+  // 🔴 FIX 6: SANITY CLAMP (กันค่าเพี้ยน)
+  // ==================================================
+  if (targetL > 1.0f) targetL = 1.0f;
+  if (targetL < -1.0f) targetL = -1.0f;
+
+  if (targetR > 1.0f) targetR = 1.0f;
+  if (targetR < -1.0f) targetR = -1.0f;
 
   // ==================================================
   // STAGE 3: APPLY DRIVE (OWNER OF PWM)
@@ -761,7 +801,7 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   applyDrive(now);
 
   // ==================================================
-  // FIX 5: WATCHDOG UPDATE
+  // FIX 7: WATCHDOG UPDATE
   // ==================================================
   wdDrive.lastUpdate_ms = now;
 
@@ -772,8 +812,7 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us)
   driveBufISR.curR = curR;
 }
 
-void setup()
-{
+void setup() {
   // ==================================================
   // 🔴 HARD SAFE FIRST (กันพุ่งก่อนทุกอย่าง)
   // ==================================================
@@ -805,8 +844,7 @@ void setup()
   // ==================================================
   // 🔴 DETECT WDT RESET
   // ==================================================
-  if (MCUSR & (1 << WDRF))
-  {
+  if (MCUSR & (1 << WDRF)) {
 #if DEBUG_SERIAL
     Serial.println(F("[BOOT] WDT RESET"));
 #endif
@@ -849,15 +887,13 @@ void setup()
   // ADS INIT
   // ==================================================
   adsCurPresent = adsCur.begin(0x48);
-  if (adsCurPresent)
-  {
+  if (adsCurPresent) {
     adsCur.setGain(GAIN_ONE);
     adsCur.setDataRate(RATE_ADS1115_250SPS);
   }
 
   adsVoltPresent = adsVolt.begin(0x49);
-  if (adsVoltPresent)
-  {
+  if (adsVoltPresent) {
     adsVolt.setGain(GAIN_ONE);
     adsVolt.setDataRate(RATE_ADS1115_250SPS);
   }
@@ -922,8 +958,7 @@ void setup()
   // ==================================================
   // INIT STATE
   // ==================================================
-  for (uint8_t i = 0; i < 4; i++)
-  {
+  for (uint8_t i = 0; i < 4; i++) {
     curA[i] = 0.0f;
     overCurCnt[i] = 0;
   }
@@ -975,8 +1010,7 @@ void setup()
   wdt_enable(WDTO_1S);
 }
 
-void loop()
-{
+void loop() {
   uint32_t loopStart_us = micros();
 
   // --------------------------------------------------
@@ -993,16 +1027,14 @@ void loop()
   sei();
 
   // 🔴 FIX 1: DROP BACKLOG ทันที
-  if (ticksToRun > 1)
-  {
+  if (ticksToRun > 1) {
     ticksToRun = 1;
   }
 
   // -----------------------------
   // RUN CONTROL LOOP (1 ครั้งเท่านั้น)
   // -----------------------------
-  if (ticksToRun == 1)
-  {
+  if (ticksToRun == 1) {
     uint32_t ctrlStart = micros();
 
     // 🔴 อ่านเวลา "ตอนจะใช้จริง"
@@ -1013,8 +1045,7 @@ void loop()
     uint32_t ctrlTime = micros() - ctrlStart;
 
     // 🔴 HARD GUARD
-    if (ctrlTime > CONTROL_PERIOD_US)
-    {
+    if (ctrlTime > CONTROL_PERIOD_US) {
       latchFault(FaultCode::LOOP_OVERRUN);
     }
   }
@@ -1056,11 +1087,7 @@ void loop()
   // --------------------------------------------------
   // BACKGROUND / SUPERVISOR
   // --------------------------------------------------
-  taskBackground(now);   
+  taskBackground(now);
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
-
-
-
-

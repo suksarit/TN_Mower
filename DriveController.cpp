@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveController.cpp (TORQUE TRUE CONTROL - FINAL FIX)
+// DriveController.cpp (FIXED - STABLE TORQUE CONTROL)
 // ============================================================================
 
 #include <Arduino.h>
@@ -53,7 +53,7 @@ void applyDrive(uint32_t now)
   }
 
   // ==================================================
-  // BASE TARGET (TORQUE COMMAND)
+  // BASE TARGET
   // ==================================================
   float finalTargetL = targetL;
   float finalTargetR = targetR;
@@ -90,10 +90,12 @@ void applyDrive(uint32_t now)
   finalTargetR *= stallScale;
 
   // ==================================================
-  // DEADZONE
+  // 🔴 FIX 1: DEADZONE ถูกต้อง
   // ==================================================
-  if (fabs(finalTargetL) < 0.5f) finalTargetL = 0;
-  if (fabs(finalTargetR) < 0.5f) finalTargetR = 0;
+  constexpr float DEADZONE = 0.05f;
+
+  if (fabs(finalTargetL) < DEADZONE) finalTargetL = 0;
+  if (fabs(finalTargetR) < DEADZONE) finalTargetR = 0;
 
   // ==================================================
   // POWER LIMIT
@@ -125,9 +127,15 @@ void applyDrive(uint32_t now)
   applyDriveLimits(finalTargetL, finalTargetR, curA_L, curA_R);
 
   // ==================================================
-  // LOAD COMP
+  // 🔴 FIX 2: CLAMP TARGET
   // ==================================================
-  if (fabs(finalTargetL) > 2.0f || fabs(finalTargetR) > 2.0f)
+  finalTargetL = constrain(finalTargetL, -1.0f, 1.0f);
+  finalTargetR = constrain(finalTargetR, -1.0f, 1.0f);
+
+  // ==================================================
+  // 🔴 FIX 3: LOAD COMP ใช้งานได้จริง
+  // ==================================================
+  if (fabs(finalTargetL) > 0.2f || fabs(finalTargetR) > 0.2f)
   {
     static float filtL = 0;
     static float filtR = 0;
@@ -138,20 +146,20 @@ void applyDrive(uint32_t now)
     constexpr float BASE_LOAD = 5.0f;
     constexpr float K_COMP = 0.1f;
 
-    float compL = constrain((filtL - BASE_LOAD) * K_COMP, -5.0f, 5.0f);
-    float compR = constrain((filtR - BASE_LOAD) * K_COMP, -5.0f, 5.0f);
+    float compL = constrain((filtL - BASE_LOAD) * K_COMP, -1.0f, 1.0f);
+    float compR = constrain((filtR - BASE_LOAD) * K_COMP, -1.0f, 1.0f);
 
     finalTargetL += compL;
     finalTargetR += compR;
   }
 
   // ==================================================
-  // RAMP (ยังใช้ได้)
+  // RAMP
   // ==================================================
   updateDriveRamp(finalTargetL, finalTargetR);
 
   // ==================================================
-  // 🔴 TORQUE TARGET = CURRENT TARGET (แก้หลัก)
+  // TORQUE TARGET
   // ==================================================
   float targetCurrentL = finalTargetL;
   float targetCurrentR = finalTargetR;
@@ -171,7 +179,7 @@ void applyDrive(uint32_t now)
   applyCurrentPID(targetCurrentL, targetCurrentR);
 
   // ==================================================
-  // CURRENT LIMIT (ADAPTIVE)
+  // 🔴 FIX 4: CURRENT LIMIT (ไม่กระชาก)
   // ==================================================
   const float CUR_LIMIT = 30.0f;
   const float CUR_HARD = 50.0f;
@@ -182,8 +190,11 @@ void applyDrive(uint32_t now)
   if (curA_R > CUR_LIMIT)
     curR *= (CUR_LIMIT / curA_R);
 
-  if (curA_L > CUR_HARD) curL = 0;
-  if (curA_R > CUR_HARD) curR = 0;
+  if (curA_L > CUR_HARD)
+    curL *= 0.2f;
+
+  if (curA_R > CUR_HARD)
+    curR *= 0.2f;
 
   // ==================================================
   // EMERGENCY
@@ -205,10 +216,15 @@ void applyDrive(uint32_t now)
   }
 
   // ==================================================
-  // KILL HANDLING
+  // 🔴 FIX 5: HARD KILL ปลอดภัย
   // ==================================================
   if (killRequest == KillType::HARD)
+  {
+    curL = 0;
+    curR = 0;
+    outputMotorPWM();
     return;
+  }
 
   if (killRequest == KillType::SOFT)
     forceDriveSoftStop(now);
@@ -247,10 +263,11 @@ void forceDriveSoftStop(uint32_t now)
 }
 
 // ============================================================================
-// CHECK COMMAND ZERO
+// CHECK COMMAND ZERO (FIXED SCALE)
 // ============================================================================
 bool driveCommandZero()
 {
-  return (abs(targetL) < 0.5f && abs(targetR) < 0.5f);
+  constexpr float ZERO_TH = 0.05f;
+  return (fabs(targetL) < ZERO_TH && fabs(targetR) < ZERO_TH);
 }
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp (FINAL - CURRENT + SPEED FEEDBACK READY)
+// SensorManager.cpp (FIXED - STABLE + FAILSAFE + REAL FILTER)
 // ============================================================================
 
 #include <Arduino.h>
@@ -31,7 +31,9 @@ static float curPrev[4]   = {0};
 static float slopeLPF[4]  = {0};
 static float curFilt[4]   = {0};
 
-// 🔴 SPEED STATE (ใหม่)
+// ======================================================
+// SPEED STATE
+// ======================================================
 static float speedEstL = 0;
 static float speedEstR = 0;
 
@@ -43,6 +45,10 @@ static uint8_t sensorFailCnt = 0;
 static bool sensorDegraded = false;
 static uint32_t failStart_ms = 0;
 
+// 🔴 NEW: timeout tracking
+static uint32_t lastGoodRead_ms = 0;
+
+// ======================================================
 static uint32_t i2cTimer = 0;
 
 // ======================================================
@@ -170,9 +176,14 @@ static bool updateADSCurrent()
     currentOffset[ch];
 
   // ==================================================
+  // 🔴 HARD CLAMP (กันค่าเพี้ยน)
+  // ==================================================
+  a = constrain(a, -CUR_MAX_PLAUSIBLE, CUR_MAX_PLAUSIBLE);
+
+  // ==================================================
   // SPIKE LIMIT
   // ==================================================
-  constexpr float MAX_DELTA = 20.0f;
+  constexpr float MAX_DELTA = 15.0f;
 
   float deltaRaw = a - curPrev[ch];
 
@@ -182,37 +193,34 @@ static bool updateADSCurrent()
   // ==================================================
   // FILTER
   // ==================================================
-  slopeLPF[ch] += 0.3f * ((a - curPrev[ch]) - slopeLPF[ch]);
+  slopeLPF[ch] += 0.25f * ((a - curPrev[ch]) - slopeLPF[ch]);
 
-  float pred = a + slopeLPF[ch] * 0.4f;
+  float pred = a + slopeLPF[ch] * 0.3f;
 
   curPrev[ch] = a;
 
   float curUse =
-    constrain((a * 0.7f + pred * 0.3f),
+    constrain((a * 0.75f + pred * 0.25f),
               -CUR_MAX_PLAUSIBLE,
               CUR_MAX_PLAUSIBLE);
 
   // ==================================================
   // VALID
   // ==================================================
-  if (fabs(curUse) <= CUR_MAX_PLAUSIBLE)
-  {
-    curA[ch] += 0.2f * (curUse - curA[ch]);
-    curFilt[ch] = curFilt[ch] * 0.85f + curA[ch] * 0.15f;
+  curA[ch] += 0.15f * (curUse - curA[ch]);
+  curFilt[ch] = curFilt[ch] * 0.9f + curA[ch] * 0.1f;
 
-    if (fabs(curUse) > CUR_TRIP_A_CH[ch])
+  if (fabs(curUse) > CUR_TRIP_A_CH[ch])
+  {
+    if (++overCurCnt[ch] >= 3)
     {
-      if (++overCurCnt[ch] >= 3)
-      {
-        latchFault(FaultCode::OVER_CURRENT);
-        return false;
-      }
+      latchFault(FaultCode::OVER_CURRENT);
+      return false;
     }
-    else
-    {
-      overCurCnt[ch] = 0;
-    }
+  }
+  else
+  {
+    overCurCnt[ch] = 0;
   }
 
   ch = (ch + 1) % 4;
@@ -240,14 +248,31 @@ bool updateSensors()
   bool ok = updateADSCurrent();
 
   // ==================================================
-  // 🔴 SPEED ESTIMATION (NEW)
+  // 🔴 SPEED ESTIMATION (stable)
   // ==================================================
-  // ใช้ current เป็น proxy (fallback)
-  speedEstL = speedEstL * 0.8f + curFilt[CUR_CH_LEFT] * 0.2f;
-  speedEstR = speedEstR * 0.8f + curFilt[CUR_CH_RIGHT] * 0.2f;
+  speedEstL = speedEstL * 0.9f + curFilt[CUR_CH_LEFT] * 0.1f;
+  speedEstR = speedEstR * 0.9f + curFilt[CUR_CH_RIGHT] * 0.1f;
+
+  uint32_t now = millis();
 
   if (ok)
-    wdSensor.lastUpdate_ms = millis();
+  {
+    lastGoodRead_ms = now;
+    wdSensor.lastUpdate_ms = now;
+  }
+
+  // ==================================================
+  // 🔴 SENSOR TIMEOUT (ของจริง)
+  // ==================================================
+  if (now - lastGoodRead_ms > 300)
+  {
+    sensorDegraded = true;
+  }
+
+  if (now - lastGoodRead_ms > 800)
+  {
+    latchFault(FaultCode::SENSOR_TIMEOUT);
+  }
 
   return ok;
 }
@@ -266,28 +291,26 @@ float getMotorCurrentR(void)
 float getMotorCurrentSafeL(void)
 {
   float c = getMotorCurrentL();
-  if (sensorDegraded) c *= 0.7f;
+  if (sensorDegraded) c *= 0.6f;
   return c;
 }
 
 float getMotorCurrentSafeR(void)
 {
   float c = getMotorCurrentR();
-  if (sensorDegraded) c *= 0.7f;
+  if (sensorDegraded) c *= 0.6f;
   return c;
 }
 
 // ======================================================
-// 🔴 SPEED API (ใหม่)
-// ======================================================
 float getSpeedL(void)
 {
-  return speedEstL * 0.03f;
+  return speedEstL * 0.02f;
 }
 
 float getSpeedR(void)
 {
-  return speedEstR * 0.03f;
+  return speedEstR * 0.02f;
 }
 
 // ======================================================
@@ -322,7 +345,7 @@ void sensorTask(uint32_t now)
     failStart_ms = 0;
     sensorFailCnt = 0;
 
-    if (sensorDegraded && millis() - wdSensor.lastUpdate_ms < 300)
+    if (sensorDegraded && millis() - lastGoodRead_ms < 200)
       sensorDegraded = false;
 
     return;
@@ -333,10 +356,10 @@ void sensorTask(uint32_t now)
 
   uint32_t failTime = now - failStart_ms;
 
-  if (failTime > 800)
+  if (failTime > 1200)
     sensorDegraded = true;
 
-  if (failTime > 1500)
+  if (failTime > 2000)
   {
     i2cState = I2CRecoverState::END_BUS;
     return;
@@ -345,7 +368,7 @@ void sensorTask(uint32_t now)
   if (failTime > 4000)
   {
     if (++sensorFailCnt >= 2)
-      latchFault(FaultCode::VOLT_SENSOR_FAULT);
+      latchFault(FaultCode::SENSOR_TIMEOUT);
   }
 }
 
