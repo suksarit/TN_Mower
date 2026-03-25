@@ -1,5 +1,5 @@
 // ============================================================================
-// FaultManager.cpp (ECU STYLE - CONTROLLED)
+// FaultManager.cpp (ECU STYLE + HISTORY + COOLDOWN)
 // ============================================================================
 
 #include <Arduino.h>
@@ -10,9 +10,23 @@
 extern KillType killRequest;
 
 // ======================================================
+// CONFIG
+// ======================================================
+constexpr uint8_t  FAULT_LOG_SIZE = 5;
+constexpr uint32_t FAULT_COOLDOWN_MS = 1000;
+
+// ======================================================
+// INTERNAL
+// ======================================================
+static FaultRecord faultLog[FAULT_LOG_SIZE];
+static uint8_t logIndex = 0;
+static uint8_t logCount = 0;
+
+static uint32_t lastFaultTime = 0;
+
+// ======================================================
 // PRIORITY
 // ======================================================
-
 static uint8_t getFaultPriority(FaultCode code)
 {
   switch (code)
@@ -25,20 +39,39 @@ static uint8_t getFaultPriority(FaultCode code)
     case FaultCode::SENSOR_TIMEOUT:       return 4;
     case FaultCode::RC_INVALID:           return 4;
     case FaultCode::LOGIC_WATCHDOG:       return 5;
-    default: return 0;
+    default: return 10;
   }
 }
 
 // ======================================================
-// FAULT REQUEST (ENTRY POINT เดียว)
+// LOG STORE
 // ======================================================
+static void pushFaultLog(FaultCode code, uint32_t now)
+{
+  faultLog[logIndex].faultCode = (uint8_t)code;
+  faultLog[logIndex].timestamp = now;
 
+  logIndex = (logIndex + 1) % FAULT_LOG_SIZE;
+
+  if (logCount < FAULT_LOG_SIZE)
+    logCount++;
+}
+
+// ======================================================
+// REQUEST FAULT
+// ======================================================
 void requestFault(FaultCode code)
 {
   if (code == FaultCode::NONE)
     return;
 
-  // 🔴 ถ้ามี fault อยู่แล้ว → ใช้ priority
+  uint32_t now = millis();
+
+  // 🔴 cooldown กัน spam
+  if (now - lastFaultTime < FAULT_COOLDOWN_MS)
+    return;
+
+  // 🔴 priority
   if (faultLatched)
   {
     if (getFaultPriority(code) >= getFaultPriority(activeFault))
@@ -47,29 +80,29 @@ void requestFault(FaultCode code)
 
   activeFault = code;
   faultLatched = true;
+  lastFaultTime = now;
 
-  // ==================================================
-  // ACTION
-  // ==================================================
+  // 🔴 log
+  pushFaultLog(code, now);
+
+  // 🔴 action
   killRequest = KillType::HARD;
   forceSafetyState(SafetyState::EMERGENCY);
 
 #if DEBUG_SERIAL
-  Serial.print(F("[FAULT] "));
-  Serial.println((uint8_t)code);
+  Serial.print(F("[FAULT SET] "));
+  Serial.println(faultCodeToString(code));
 #endif
 }
 
 // ======================================================
-// CLEAR FAULT
+// CLEAR
 // ======================================================
-
 void clearFault(void)
 {
   if (!faultLatched)
     return;
 
-  // 🔴 ต้องปลอดภัยก่อน
   if (!neutral(rcThrottle) || !neutral(rcSteer))
     return;
 
@@ -80,38 +113,21 @@ void clearFault(void)
   forceSafetyState(SafetyState::SAFE);
 
 #if DEBUG_SERIAL
-  Serial.println(F("[FAULT] CLEARED"));
+  Serial.println(F("[FAULT CLEARED]"));
 #endif
 }
 
 // ======================================================
 // QUERY
 // ======================================================
-
-bool isFaultActive(void)
-{
-  return faultLatched;
-}
-
-FaultCode getActiveFault(void)
-{
-  return activeFault;
-}
-
-bool canSystemRun(void)
-{
-  return !faultLatched;
-}
-
-bool isEmergency(void)
-{
-  return faultLatched;
-}
+bool isFaultActive(void) { return faultLatched; }
+FaultCode getActiveFault(void) { return activeFault; }
+bool canSystemRun(void) { return !faultLatched; }
+bool isEmergency(void) { return faultLatched; }
 
 // ======================================================
-// WATCHDOG
+// WATCHDOG (เหมือนเดิม)
 // ======================================================
-
 void monitorSubsystemWatchdogs(uint32_t now)
 {
   constexpr uint16_t WD_GRACE = 120;
@@ -130,30 +146,41 @@ void monitorSubsystemWatchdogs(uint32_t now)
 }
 
 // ======================================================
-// RESET FLOW (IGNITION BASED)
+// RESET
 // ======================================================
-
 void processFaultReset(uint32_t now)
 {
   static bool ignitionWasOn = false;
-
   bool ign = ignitionActive;
 
   if (!ignitionWasOn && ign)
-  {
     clearFault();
-  }
 
   ignitionWasOn = ign;
 }
 
 // ======================================================
+// LOG API
+// ======================================================
+uint8_t getFaultLogCount()
+{
+  return logCount;
+}
+
+bool getFaultLog(uint8_t index, FaultRecord& out)
+{
+  if (index >= logCount)
+    return false;
+
+  out = faultLog[index];
+  return true;
+}
+
+// ======================================================
 // BACKGROUND
 // ======================================================
-
 void backgroundFaultEEPROMTask(uint32_t now)
 {
   (void)now;
 }
-
 
