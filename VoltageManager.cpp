@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include <Arduino.h>
+
 #include "VoltageManager.h"
 #include "GlobalState.h"
 #include "HardwareConfig.h"

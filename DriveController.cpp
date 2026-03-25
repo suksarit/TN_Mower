@@ -9,7 +9,6 @@
 #include "GlobalState.h"
 #include "SystemTypes.h"
 #include "HardwareConfig.h"
-
 #include "DriveController.h"
 #include "MotorDriver.h"
 #include "SafetyManager.h"

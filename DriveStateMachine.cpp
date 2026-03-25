@@ -2,6 +2,8 @@
 // DriveStateMachine.cpp 
 // ============================================================================
 
+#include "CurrentController.h"
+
 #include <Arduino.h>
 #include <stdint.h>
 #include <math.h>
@@ -24,14 +26,16 @@ void runDrive(uint32_t now)
   static uint32_t limpSafeStart_ms = 0;
 
   // ==================================================
-  // MOTOR RUNAWAY DETECTION
+  // RUNAWAY DETECTION (IMPROVED)
   // ==================================================
   constexpr int16_t RUNAWAY_PWM_THRESHOLD = 120;
   constexpr uint32_t RUNAWAY_CONFIRM_MS = 200;
 
   static uint32_t runawayStart_ms = 0;
 
-  bool commandZero = (targetL == 0 && targetR == 0);
+  // 🔴 FIX: ใช้ deadzone ไม่ใช้ == 0
+  bool commandZero =
+    (fabs(targetL) < 0.05f && fabs(targetR) < 0.05f);
 
   bool motorMoving =
     (abs(curL) > RUNAWAY_PWM_THRESHOLD ||
@@ -67,12 +71,15 @@ void runDrive(uint32_t now)
   {
     // --------------------------------------------------
     case DriveState::IDLE:
-
+    {
       targetL = 0;
       targetR = 0;
 
       limpSafeStart_ms = 0;
       driveSoftStopStart_ms = 0;
+
+      // 🔴 reset control กันค่าเก่าค้าง
+      resetCurrentLoop();
 
       if (systemState == SystemState::ACTIVE)
       {
@@ -80,10 +87,11 @@ void runDrive(uint32_t now)
       }
 
       break;
+    }
 
     // --------------------------------------------------
     case DriveState::RUN:
-
+    {
       if (safety == SafetyState::EMERGENCY)
       {
         driveState = DriveState::SOFT_STOP;
@@ -95,13 +103,16 @@ void runDrive(uint32_t now)
       }
 
       break;
+    }
 
     // --------------------------------------------------
     case DriveState::LIMP:
+    {
+      // 🔴 FIX: scale ไม่สะสม
+      const float limpScale = 0.5f;
 
-      // จำกัด target แทนการยุ่ง control
-      targetL /= 2;
-      targetR /= 2;
+      targetL = constrain(targetL, -1.0f, 1.0f) * limpScale;
+      targetR = constrain(targetR, -1.0f, 1.0f) * limpScale;
 
       if (safety == SafetyState::EMERGENCY)
       {
@@ -129,17 +140,23 @@ void runDrive(uint32_t now)
       }
 
       break;
+    }
 
     // --------------------------------------------------
     case DriveState::SOFT_STOP:
-
+    {
       targetL = 0;
       targetR = 0;
 
       if (driveSoftStopStart_ms == 0)
+      {
         driveSoftStopStart_ms = now;
 
-      // รอจน ramp + PID หยุดเอง
+        // 🔴 reset PID ตอนเริ่มหยุด
+        resetCurrentLoop();
+      }
+
+      // 🔴 รอให้ output ลดจริง
       if ((abs(curL) < 3 && abs(curR) < 3) ||
           (now - driveSoftStopStart_ms >= DRIVE_SOFT_STOP_TIMEOUT_MS))
       {
@@ -148,19 +165,32 @@ void runDrive(uint32_t now)
       }
 
       break;
+    }
 
     // --------------------------------------------------
     case DriveState::LOCKED:
-
+    {
       targetL = 0;
       targetR = 0;
 
       driveSafe();
+
+      // 🔴 OPTIONAL: ปลด lock ถ้าระบบกลับ safe
+      if (systemState == SystemState::ACTIVE &&
+          safety == SafetyState::SAFE)
+      {
+#if DEBUG_SERIAL
+        Serial.println(F("[DRIVE] UNLOCK -> IDLE"));
+#endif
+        driveState = DriveState::IDLE;
+      }
+
       break;
+    }
 
     // --------------------------------------------------
     default:
-
+    {
       latchFault(FaultCode::LOGIC_WATCHDOG);
 
       driveSafe();
@@ -174,6 +204,7 @@ void runDrive(uint32_t now)
       driveSoftStopStart_ms = 0;
 
       break;
+    }
   }
 
   // ==================================================
@@ -188,6 +219,7 @@ void runDrive(uint32_t now)
     Serial.println((uint8_t)driveState);
 #endif
 
+      // 🔴 reset timer ตอนเข้า SOFT_STOP
     if (driveState == DriveState::SOFT_STOP)
       driveSoftStopStart_ms = now;
 

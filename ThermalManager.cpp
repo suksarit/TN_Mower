@@ -3,10 +3,11 @@
 // ============================================================================
 
 #include <Arduino.h>
+
 #include "ThermalManager.h"
 #include "GlobalState.h"
 #include "SafetyManager.h"
-#include "FaultManager.h"   // 🔴 เพิ่ม
+#include "FaultManager.h"   
 
 // ======================================================
 // CONFIG
