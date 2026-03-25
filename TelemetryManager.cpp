@@ -1,5 +1,5 @@
 // ============================================================================
-// TelemetryManager.cpp (FIXED + NON-SPAM + ECU SAFE)
+// TelemetryManager.cpp (BT READY + NON-SPAM + ECU SAFE)
 // ============================================================================
 
 #include "SystemTypes.h"
@@ -9,9 +9,8 @@
 #include "SafetyManager.h"
 #include "FaultManager.h"
 
-// ============================================================================
-// CONFIG
-// ============================================================================
+// 🔴 ใช้ Bluetooth (HC-05)
+#define TEL_SERIAL Serial2
 
 #ifndef BUDGET_LOOP_MS
 #define BUDGET_LOOP_MS 10
@@ -68,11 +67,7 @@ struct TelemetryPacket
 #pragma pack(pop)
 
 // ======================================================
-// CSV
-// ======================================================
-
-// ======================================================
-// CSV (MOBILE / REALTIME GRAPH READY)
+// CSV (BLUETOOTH)
 // ======================================================
 
 void telemetryCSV(uint32_t now, uint32_t loopStart_us)
@@ -83,26 +78,23 @@ void telemetryCSV(uint32_t now, uint32_t loopStart_us)
   if (now - lastTx < TELEMETRY_PERIOD_MS) return;
   lastTx = now;
 
-  // 🔴 FORMAT:
-  // time,curL,curR,volt,pwmL,pwmR,fault
+  TEL_SERIAL.print(now); TEL_SERIAL.print(",");
 
-  Serial.print(now); Serial.print(",");
+  TEL_SERIAL.print(curA[0], 2); TEL_SERIAL.print(",");
+  TEL_SERIAL.print(curA[1], 2); TEL_SERIAL.print(",");
 
-  Serial.print(curA[0], 2); Serial.print(",");   // current L
-  Serial.print(curA[1], 2); Serial.print(",");   // current R
+  TEL_SERIAL.print(engineVolt, 2); TEL_SERIAL.print(",");
 
-  Serial.print(engineVolt, 2); Serial.print(","); // voltage
+  TEL_SERIAL.print(curL); TEL_SERIAL.print(",");
+  TEL_SERIAL.print(curR); TEL_SERIAL.print(",");
 
-  Serial.print(curL); Serial.print(",");          // PWM L
-  Serial.print(curR); Serial.print(",");          // PWM R
-
-  Serial.println((uint8_t)getActiveFault());      // fault code
+  TEL_SERIAL.println((uint8_t)getActiveFault());
 
 #endif
 }
 
 // ======================================================
-// BINARY
+// BINARY (BLUETOOTH)
 // ======================================================
 
 void telemetryBinary(uint32_t now, uint32_t loopStart_us)
@@ -142,7 +134,7 @@ void telemetryBinary(uint32_t now, uint32_t loopStart_us)
 
   pkt.cpuLoad_x10 = cpu;
 
-  pkt.activeFault = (uint8_t)getActiveFault(); // 🔴 FIX
+  pkt.activeFault = (uint8_t)getActiveFault();
   pkt.freeRam = freeRam();
 
   uint8_t crc = 0;
@@ -150,25 +142,25 @@ void telemetryBinary(uint32_t now, uint32_t loopStart_us)
 
   const uint8_t* p = (const uint8_t*)&pkt;
 
-  Serial.write(0xAA);
-  Serial.write(0x55);
+  TEL_SERIAL.write(0xAA);
+  TEL_SERIAL.write(0x55);
 
-  Serial.write(len);
+  TEL_SERIAL.write(len);
   crc = crc8_update(crc, len);
 
   for (uint8_t i = 0; i < len; i++)
   {
-    Serial.write(p[i]);
+    TEL_SERIAL.write(p[i]);
     crc = crc8_update(crc, p[i]);
   }
 
-  Serial.write(crc);
+  TEL_SERIAL.write(crc);
 
 #endif
 }
 
 // ======================================================
-// DEBUG (ANTI-SPAM)
+// DEBUG (USB SERIAL ONLY)
 // ======================================================
 
 void debugTelemetry(uint32_t now)
