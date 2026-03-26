@@ -138,10 +138,13 @@ enum class ACSCalState : uint8_t {
   FAIL
 };
 
+// ============================================================================
+// 🔴 KILL TYPE (ใช้กับ BT + SAFETY)
+// ============================================================================
 enum class KillType : uint8_t {
   NONE = 0,
-  SOFT = 1,
-  HARD = 2,
+  SOFT = 1,   // ผ่าน DriveRamp
+  HARD = 2,   // ตัดทันที
   _COUNT
 };
 
@@ -156,6 +159,7 @@ inline bool isValidEnum(uint8_t raw) {
 // ============================================================================
 // DEBUG STRING
 // ============================================================================
+
 inline const char* safetyStateToString(SafetyState s)
 {
   switch (s)
@@ -164,6 +168,42 @@ inline const char* safetyStateToString(SafetyState s)
     case SafetyState::WARN: return "WARN";
     case SafetyState::LIMP: return "LIMP";
     case SafetyState::EMERGENCY: return "EMERGENCY";
+    default: return "UNKNOWN";
+  }
+}
+
+inline const char* driveStateToString(DriveState s)
+{
+  switch (s)
+  {
+    case DriveState::IDLE: return "IDLE";
+    case DriveState::RUN: return "RUN";
+    case DriveState::LIMP: return "LIMP";
+    case DriveState::SOFT_STOP: return "SOFT_STOP";
+    case DriveState::LOCKED: return "LOCKED";
+    default: return "UNKNOWN";
+  }
+}
+
+inline const char* bladeStateToString(BladeState s)
+{
+  switch (s)
+  {
+    case BladeState::IDLE: return "IDLE";
+    case BladeState::RUN: return "RUN";
+    case BladeState::SOFT_STOP: return "SOFT_STOP";
+    case BladeState::LOCKED: return "LOCKED";
+    default: return "UNKNOWN";
+  }
+}
+
+inline const char* killTypeToString(KillType k)
+{
+  switch (k)
+  {
+    case KillType::NONE: return "NONE";
+    case KillType::SOFT: return "SOFT";
+    case KillType::HARD: return "HARD";
     default: return "UNKNOWN";
   }
 }
@@ -177,6 +217,9 @@ inline const char* faultCodeToString(FaultCode f)
     case FaultCode::COMMS_TIMEOUT: return "COMMS_TIMEOUT";
     case FaultCode::SENSOR_TIMEOUT: return "SENSOR_TIMEOUT";
     case FaultCode::LOGIC_WATCHDOG: return "LOGIC_WATCHDOG";
+    case FaultCode::CUR_SENSOR_FAULT: return "CUR_SENSOR_FAULT";
+    case FaultCode::VOLT_SENSOR_FAULT: return "VOLT_SENSOR_FAULT";
+    case FaultCode::TEMP_SENSOR_FAULT: return "TEMP_SENSOR_FAULT";
     case FaultCode::OVER_CURRENT: return "OVER_CURRENT";
     case FaultCode::OVER_TEMP: return "OVER_TEMP";
     case FaultCode::DRIVE_TIMEOUT: return "DRIVE_TIMEOUT";
@@ -184,11 +227,8 @@ inline const char* faultCodeToString(FaultCode f)
     case FaultCode::LOOP_OVERRUN: return "LOOP_OVERRUN";
     case FaultCode::LOW_VOLTAGE_CRITICAL: return "LOW_VOLTAGE_CRITICAL";
     case FaultCode::LOW_VOLTAGE_WARN: return "LOW_VOLTAGE_WARN";
-
-    // 🔴 เพิ่ม debug
     case FaultCode::RC_INVALID: return "RC_INVALID";
     case FaultCode::ENGINE_START_FAIL: return "ENGINE_START_FAIL";
-
     default: return "UNKNOWN";
   }
 }

@@ -40,6 +40,8 @@
 #include "VoltageManager.h"
 #include "ThermalManager.h"
 #include "DriveProtection.h"
+#include "BluetoothProtocol.h"
+#include "BluetoothTelemetry.h "
 
 // ======================================================
 // FUNCTION PROTOTYPES
@@ -806,7 +808,9 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   driveBufISR.curR = curR;
 }
 
+
 void setup() {
+
   // ==================================================
   // 🔴 HARD SAFE FIRST (กันพุ่งก่อนทุกอย่าง)
   // ==================================================
@@ -862,8 +866,13 @@ void setup() {
   Serial.begin(115200);
 #endif
 
-  Serial1.begin(115200);
-  Serial2.begin(115200);
+  Serial1.begin(115200);  // iBUS
+  Serial2.begin(115200);  // 🔴 Bluetooth HC-05
+
+  // ==================================================
+  // 🔴 INIT BLUETOOTH PROTOCOL (สำคัญ)
+  // ==================================================
+  btProtocolInit();   // ✅ ต้องอยู่หลัง Serial2.begin เท่านั้น
 
   ibus.begin(Serial1);
   getGimbal().begin();
@@ -1005,6 +1014,7 @@ void setup() {
 }
 
 void loop() {
+
   uint32_t loopStart_us = micros();
 
   // ==================================================
@@ -1040,20 +1050,31 @@ void loop() {
   uint32_t now = millis();
 
   // ==================================================
-  // BACKGROUND
+  // 🔴 BLUETOOTH (PRIORITY INPUT)
   // ==================================================
-  taskComms(now);              // 🔴 RC ก่อน
-  updateBluetoothCommand();    // 🔴 BT หลัง
+  btProtocolUpdate();       // รับคำสั่ง (STOP / HB / RESET)
+  btTelemetryUpdate(now);   // ส่งข้อมูล
+
+  // ==================================================
+  // BACKGROUND (RC มาก่อนเสมอ)
+  // ==================================================
+  taskComms(now);           // RC = priority สูงสุด
 
   sensorTask(now);
-
   processFaultReset(now);
 
   taskDriveEvents(now);
-  taskSafety(now);
 
   // ==================================================
-  // 🔴 FAULT DEBUG (ต้องอยู่ก่อน gate)
+  // 🔴 SAFETY
+  // ==================================================
+  taskSafety(now);
+
+  // 🔴 🔥 จุดสำคัญที่สุด (คุณยังไม่มี)
+  applyKillRequest(now);
+
+  // ==================================================
+  // 🔴 FAULT DEBUG
   // ==================================================
   static FaultCode lastFault = FaultCode::NONE;
 
@@ -1087,4 +1108,6 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
+
+
 

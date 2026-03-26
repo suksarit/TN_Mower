@@ -4,6 +4,13 @@
 
 #include <Arduino.h>
 #include "SafetyManager.h"
+#include "SystemTypes.h"
+#include "GlobalState.h"
+
+// 🔴 รับ killRequest จากระบบหลัก
+extern KillType killRequest;
+
+void driveSafe(); 
 
 // ============================================================================
 // INTERNAL STATE
@@ -12,6 +19,9 @@ static SafetyState driveSafetyInternal = SafetyState::SAFE;
 
 // 🔴 EMERGENCY LOCK (sticky)
 static bool emergencyLatched = false;
+
+// 🔴 กันยิงซ้ำ
+static bool killActive = false;
 
 // ============================================================================
 // HYSTERESIS COUNTERS
@@ -22,7 +32,7 @@ static uint8_t warnConfirmCnt = 0;
 static constexpr uint8_t LIMP_CONFIRM_CNT = 3;
 static constexpr uint8_t WARN_CONFIRM_CNT = 2;
 
-// 🔴 HOLD TIME (กันเด้ง)
+// 🔴 HOLD TIME
 static uint32_t limpHoldStart_ms = 0;
 static constexpr uint32_t LIMP_HOLD_TIME_MS = 1500;
 
@@ -41,7 +51,55 @@ static uint32_t safeStableStart_ms = 0;
 static constexpr uint32_t SAFE_STABLE_TIME_MS = 2000;
 
 // ============================================================================
-// RAW SAFETY (FIX: รองรับ reverse current)
+// 🔴 APPLY KILL REQUEST (สำคัญที่สุด)
+// ============================================================================
+void applyKillRequest(uint32_t now)
+{
+  if (killRequest == KillType::NONE)
+  {
+    killActive = false;
+    return;
+  }
+
+  // ==================================================
+  // 🔴 SOFT STOP
+  // ==================================================
+  if (killRequest == KillType::SOFT)
+  {
+    if (!killActive)
+    {
+      targetL = 0;
+      targetR = 0;
+
+      driveState = DriveState::SOFT_STOP;
+      killActive = true;
+    }
+  }
+
+  // ==================================================
+  // 🔴 HARD STOP
+  // ==================================================
+  else if (killRequest == KillType::HARD)
+  {
+    // ตัดจริง
+    driveSafe();
+
+    // 🔴 reset target กันเด้ง
+    targetL = 0;
+    targetR = 0;
+
+    driveState = DriveState::LOCKED;
+
+    emergencyLatched = true;
+    killActive = true;
+  }
+
+  // 🔴 เคลียร์ request
+  killRequest = KillType::NONE;
+}
+
+// ============================================================================
+// RAW SAFETY
 // ============================================================================
 SafetyState evaluateSafetyRaw(
   const SafetyInput& in,
@@ -90,9 +148,6 @@ void updateSafetyStability(
   bool& autoReverseActive,
   DriveEvent& lastDriveEvent)
 {
-  // ==================================================
-  // 🔴 EMERGENCY LATCH (sticky)
-  // ==================================================
   if (raw == SafetyState::EMERGENCY)
   {
     emergencyLatched = true;
@@ -113,9 +168,6 @@ void updateSafetyStability(
 
   SafetyState filtered = driveSafetyInternal;
 
-  // ==================================================
-  // HYSTERESIS
-  // ==================================================
   switch (raw)
   {
     case SafetyState::LIMP:
@@ -125,7 +177,6 @@ void updateSafetyStability(
       {
         filtered = SafetyState::LIMP;
         limpConfirmCnt = LIMP_CONFIRM_CNT;
-
         limpHoldStart_ms = now;
       }
       break;
@@ -149,9 +200,6 @@ void updateSafetyStability(
       break;
   }
 
-  // ==================================================
-  // 🔴 HOLD LIMP (กันแกว่ง)
-  // ==================================================
   if (driveSafetyInternal == SafetyState::LIMP)
   {
     if (now - limpHoldStart_ms < LIMP_HOLD_TIME_MS)
@@ -160,14 +208,8 @@ void updateSafetyStability(
     }
   }
 
-  // ==================================================
-  // APPLY STATE
-  // ==================================================
   driveSafetyInternal = filtered;
 
-  // ==================================================
-  // SAFE STABILITY (ต้องนิ่งจริงก่อนปล่อย)
-  // ==================================================
   if (raw != SafetyState::SAFE)
   {
     safetyStability = SafetyStabilityState::SAFE_TRANSIENT;
@@ -221,10 +263,11 @@ void forceSafetyState(SafetyState s)
 }
 
 // ============================================================================
-// 🔴 NEW: CLEAR EMERGENCY LATCH (ต้องเรียกจาก FaultManager เท่านั้น)
+// CLEAR EMERGENCY LATCH
 // ============================================================================
 void clearSafetyLatch()
 {
   emergencyLatched = false;
+  killActive = false;
 }
 

@@ -43,7 +43,7 @@ void updateDriveRamp(float &finalTargetL,
   uint32_t now = millis();
 
   // ==================================================
-  // ERROR (ใช้ target เดิมเป็น base)
+  // STATE
   // ==================================================
   static float rampL = 0;
   static float rampR = 0;
@@ -52,17 +52,38 @@ void updateDriveRamp(float &finalTargetL,
   float errR = finalTargetR - rampR;
 
   // ==================================================
-  // SELECT RATE
+  // 🔴 S-CURVE FACTOR (สำคัญ)
   // ==================================================
-  float rateL =
+  auto sCurve = [](float error, float maxVal) -> float {
+    float x = fabs(error) / maxVal;
+    if (x > 1.0f) x = 1.0f;
+
+    // cubic ease out
+    float y = 1.0f - (1.0f - x)*(1.0f - x)*(1.0f - x);
+    return y;
+  };
+
+  // ==================================================
+  // SELECT BASE RATE
+  // ==================================================
+  float baseRateL =
     (abs(finalTargetL) < SNAP_ZERO) ? STOP_RATE :
     (abs(finalTargetL) > abs(rampL)) ? ACCEL_RATE :
                                       DECEL_RATE;
 
-  float rateR =
+  float baseRateR =
     (abs(finalTargetR) < SNAP_ZERO) ? STOP_RATE :
     (abs(finalTargetR) > abs(rampR)) ? ACCEL_RATE :
                                       DECEL_RATE;
+
+  // ==================================================
+  // APPLY S-CURVE
+  // ==================================================
+  float factorL = sCurve(errL, PWM_TOP);
+  float factorR = sCurve(errR, PWM_TOP);
+
+  float rateL = baseRateL * factorL;
+  float rateR = baseRateR * factorR;
 
   float stepL = rateL * dt;
   float stepR = rateR * dt;
@@ -118,7 +139,7 @@ void updateDriveRamp(float &finalTargetL,
   }
 
   // ==================================================
-  // OUTPUT (แก้ target เท่านั้น)
+  // OUTPUT
   // ==================================================
   finalTargetL = rampL;
   finalTargetR = rampR;

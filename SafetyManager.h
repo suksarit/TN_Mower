@@ -1,18 +1,25 @@
 // ========================================================================================
-// SafetyManager.h  (FINAL - INDUSTRIAL SAFE / CLEAN / NO DUPLICATE)
+// SafetyManager.h   
 // ========================================================================================
 
 #ifndef SAFETY_MANAGER_H
 #define SAFETY_MANAGER_H
 
-#include <stdint.h>
-#include "SystemTypes.h"   // SafetyState, DriveEvent
+#include <Arduino.h>        // 🔴 ต้องมี (uint32_t)
+#include "SystemTypes.h"    // SafetyState, DriveEvent
 
 // ============================================================================
 // ACCESSORS (GLOBAL SAFETY STATE)
 // ============================================================================
 SafetyState getDriveSafety();
 void forceSafetyState(SafetyState s);
+void clearSafetyLatch();
+
+// ============================================================================
+// 🔴 EXECUTION LAYER (สำคัญมาก)
+// ใช้ apply killRequest → ควบคุม motor จริง
+// ============================================================================
+void applyKillRequest(uint32_t now);
 
 // ============================================================================
 // SAFETY INPUT SNAPSHOT (PURE DATA)
@@ -55,8 +62,7 @@ void updateSafetyStability(
   DriveEvent& lastDriveEvent);
 
 // ============================================================================
-// 🔴 OPTIONAL EXTENSION (อนาคต)
-// ใช้สำหรับ FaultManager / DriveController hook
+// 🔴 HELPER (INLINE)
 // ============================================================================
 inline bool isSafetyCritical(SafetyState s)
 {
