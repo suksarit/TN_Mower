@@ -1,4 +1,4 @@
-# 🚜 TN_Mower (โปรแกรมควบคุมรถตัดหญ้าบังคับ)
+# 🚜 TN_Mower (โปรแกรมควบคุมรถตัดหญ้าบังคับวิทยุ)
 
 ![C++](https://img.shields.io/badge/Language-C++-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
@@ -36,7 +36,7 @@
 
 | โมดูล | หน้าที่การทำงาน |
 | :--- | :--- |
-| `TN_Mower.ino` | ไฟล์หลัก (Main loop) สำหรับการประมวลผลระบบทั้งหมด |
+| `TN_Mower.ino` | ไฟล์หลัก สำหรับการประมวลผลระบบทั้งหมด |
 | `GlobalState` | จัดการตัวแปรและสถานะโดยรวมของรถตัดหญ้า |
 | `InputMixer` | ประมวลผลและผสมสัญญาณจากรีโมท (RC Channel) |
 | `MotorDriver` / `MotorOutput` | แปลงคำสั่งควบคุมเป็นสัญญาณ PWM ส่งไปยัง Motor Driver |
@@ -58,4 +58,4 @@
 
 5. คู่มือเพิ่มเติม: อ่านการตั้งค่าเชิงลึกได้ที่ไฟล์ คู่มือ.txt 
  
-7. 
+
