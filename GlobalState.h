@@ -1,5 +1,5 @@
 // ========================================================================================
-// GlobalState.h  (FINAL - INDUSTRIAL KILL SYSTEM)
+// GlobalState.h  (FINAL - INDUSTRIAL KILL + WATCHDOG + ANTI-GLITCH)
 // ========================================================================================
 
 #pragma once
@@ -18,12 +18,20 @@
 // ======================================================
 // 🔴 KILL SYSTEM (CRITICAL)
 // ======================================================
-// killRequest  = คำสั่งจาก BT / Fault
-// killLatched  = ระบบล็อกจริง
-// killISRFlag  = ใช้ใน ISR (เร็วสุด)
 extern volatile bool killISRFlag;
 extern bool killLatched;
 extern KillType killRequest;
+
+// ======================================================
+// 🔴 CONTROL WATCHDOG (FREEZE DETECT)
+// ======================================================
+extern volatile uint32_t lastControlExec_us;
+
+// ======================================================
+// 🔴 ANTI-GLITCH FILTER
+// ======================================================
+extern float targetL_filtered;
+extern float targetR_filtered;
 
 // ======================================================
 // GLOBAL VARIABLES
@@ -181,6 +189,12 @@ inline bool adsCurPresent  = false;
 inline bool adsVoltPresent = false;
 
 // ======================================================
+// 🔴 I2C RECOVERY (แก้ error ที่คุณเจอ)
+// ======================================================
+inline I2CRecoverState i2cState = I2CRecoverState::IDLE;
+inline uint32_t i2cRecoverStart_ms = 0;
+
+// ======================================================
 // WATCHDOG DOMAINS
 // ======================================================
 struct WatchdogDomain {
@@ -193,26 +207,6 @@ inline WatchdogDomain wdSensor = {0,120,false};
 inline WatchdogDomain wdComms  = {0,150,false};
 inline WatchdogDomain wdDrive  = {0,100,false};
 inline WatchdogDomain wdBlade  = {0,100,false};
-
-// ======================================================
-// I2C RECOVERY
-// ======================================================
-inline I2CRecoverState i2cState = I2CRecoverState::IDLE;
-
-// ======================================================
-// IMBALANCE
-// ======================================================
-inline float imbalanceCorrL = 0.0f;
-inline float imbalanceCorrR = 0.0f;
-
-// ======================================================
-// EEPROM FAULT CONTROL
-// ======================================================
-inline uint8_t faultWriteCount = 0;
-inline uint32_t lastFaultWriteMs = 0;
-
-inline bool faultWritePending = false;
-inline FaultCode faultToStore = FaultCode::NONE;
 
 // ======================================================
 // HELPER FUNCTIONS
@@ -230,23 +224,6 @@ inline float curLeft()
 inline float curRight()
 {
   return curA[2] + curA[3];
-}
-
-inline int16_t ramp(int16_t current,
-                    int16_t target,
-                    int16_t step)
-{
-  if (current < target)
-  {
-    current += step;
-    if (current > target) current = target;
-  }
-  else if (current > target)
-  {
-    current -= step;
-    if (current < target) current = target;
-  }
-  return current;
 }
 
 // ======================================================

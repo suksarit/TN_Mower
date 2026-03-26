@@ -1,5 +1,5 @@
 // ============================================================================
-// MotorDriver.cpp 
+// MotorDriver.cpp (FINAL - INDUSTRIAL SAFE PWM + KILL ISR + FAN PWM)
 // ============================================================================
 
 #include <Arduino.h>
@@ -9,6 +9,10 @@
 #include "GlobalState.h"
 #include "SensorManager.h"
 
+// 🔴 ใช้ kill ระดับระบบ
+extern volatile bool killISRFlag;
+extern bool killLatched;
+
 // ============================================================================
 // PWM CONSTANT
 // ============================================================================
@@ -16,25 +20,25 @@
 #define PWM_TOP 1067
 #endif
 
+// 🔴 FAN PWM แยก (อย่าปนกับ motor)
+#define FAN_PWM_TOP 255
+
 // ============================================================================
 // PWM BUFFER
 // ============================================================================
 volatile uint16_t pwmL_req = 0;
 volatile uint16_t pwmR_req = 0;
 
-volatile uint16_t fanPwmL_req = 0;
-volatile uint16_t fanPwmR_req = 0;
-
 // ============================================================================
-// INTERNAL LIMIT (ANTI SPIKE)
+// INTERNAL STATE
 // ============================================================================
 static uint16_t pwmL_last = 0;
 static uint16_t pwmR_last = 0;
 
-constexpr uint16_t PWM_SLEW_LIMIT = 40; // จำกัดการเปลี่ยนต่อ ISR
+constexpr uint16_t PWM_SLEW_LIMIT = 40;
 
 // ============================================================================
-// PWM SETUP
+// PWM SETUP (MOTOR)
 // ============================================================================
 void setupPWM15K()
 {
@@ -60,14 +64,14 @@ void setupPWM15K()
 }
 
 // ============================================================================
-// FAN PWM (ไม่เอาเข้า ISR แล้ว)
+// 🔴 FAN PWM SETUP (Timer5)
 // ============================================================================
 void setupFanPWM15K()
 {
   TCCR5A = _BV(COM5B1) | _BV(COM5C1) | _BV(WGM51);
   TCCR5B = _BV(WGM53) | _BV(WGM52) | _BV(CS50);
 
-  ICR5 = PWM_TOP;
+  ICR5 = FAN_PWM_TOP;
 
   OCR5B = 0;
   OCR5C = 0;
@@ -89,25 +93,36 @@ inline void atomicWrite16(volatile uint16_t &var, uint16_t value)
 // ============================================================================
 void setPWM_L(uint16_t v)
 {
+  if (killLatched) return;
+
   if (v > PWM_TOP) v = PWM_TOP;
   atomicWrite16(pwmL_req, v);
 }
 
 void setPWM_R(uint16_t v)
 {
+  if (killLatched) return;
+
   if (v > PWM_TOP) v = PWM_TOP;
   atomicWrite16(pwmR_req, v);
 }
 
+// ============================================================================
+// 🔴 SET FAN PWM
+// ============================================================================
 void setFanPWM_L(uint16_t pwm)
 {
-  if (pwm > PWM_TOP) pwm = PWM_TOP;
-  OCR5C = pwm; // เขียนตรง ไม่ต้องผ่าน ISR
+  if (killLatched) return;
+
+  if (pwm > FAN_PWM_TOP) pwm = FAN_PWM_TOP;
+  OCR5C = pwm;
 }
 
 void setFanPWM_R(uint16_t pwm)
 {
-  if (pwm > PWM_TOP) pwm = PWM_TOP;
+  if (killLatched) return;
+
+  if (pwm > FAN_PWM_TOP) pwm = FAN_PWM_TOP;
   OCR5B = pwm;
 }
 
@@ -126,17 +141,28 @@ inline uint16_t applySlew(uint16_t target, uint16_t last)
 }
 
 // ============================================================================
-// PWM APPLY (ISR)
+// 🔴 PWM APPLY (ISR)
 // ============================================================================
 ISR(TIMER3_OVF_vect)
 {
+  // 🔴 HARD KILL
+  if (killISRFlag)
+  {
+    OCR3A = 0;
+    OCR4A = 0;
+
+    pwmL_last = 0;
+    pwmR_last = 0;
+
+    return;
+  }
+
   uint16_t l = pwmL_req;
   uint16_t r = pwmR_req;
 
   if (l > PWM_TOP) l = PWM_TOP;
   if (r > PWM_TOP) r = PWM_TOP;
 
-  // 🔴 slew rate limit กันกระชาก
   l = applySlew(l, pwmL_last);
   r = applySlew(r, pwmR_last);
 
@@ -152,11 +178,13 @@ ISR(TIMER3_OVF_vect)
 // ============================================================================
 ISR(TIMER3_COMPB_vect)
 {
-  sensorAdcTrigger();
+  if (!killISRFlag) {
+    sensorAdcTrigger();
+  }
 }
 
 // ============================================================================
-// DRIVE SAFE (HARD CUT)
+// 🔴 HARD SAFE
 // ============================================================================
 void driveSafe()
 {
@@ -177,14 +205,13 @@ void driveSafe()
 }
 
 // ============================================================================
-// TRUE SHORT BRAKE (แก้จริง)
+// 🔴 SHORT BRAKE
 // ============================================================================
 void motorShortBrake()
 {
   atomicWrite16(pwmL_req, 0);
   atomicWrite16(pwmR_req, 0);
 
-  // 🔴 short motor จริง
-  PORTA |= 0b00001111; // L1 L2 R1 R2 = HIGH
+  PORTA |= 0b00001111;
 }
 

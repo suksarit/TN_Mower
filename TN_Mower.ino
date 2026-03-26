@@ -681,20 +681,31 @@ void taskBackground(uint32_t now) {
 }
 
 void runControlLoop(uint32_t now, uint32_t loopStart_us) {
+
+  // ==================================================
+  // 🔴 CONTROL WATCHDOG UPDATE (สำคัญมาก)
+  // ==================================================
+  lastControlExec_us = micros();
+
   // ==================================================
   // 🔴 HARD KILL (สูงสุด - หยุดทันที)
   // ==================================================
   if (killRequest == KillType::HARD) {
+
     driveBufISR.targetL = 0;
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
 
-    // 🔴 reset ramp state ด้วย (กันเด้งตอนกลับมา)
+    // 🔴 reset ramp + filter
     static float lastTargetL = 0;
     static float lastTargetR = 0;
+
     lastTargetL = 0;
     lastTargetR = 0;
+
+    targetL_filtered = 0;
+    targetR_filtered = 0;
 
     return;
   }
@@ -705,28 +716,53 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   controlDt_s = 0.02f;
 
   // ==================================================
-  // FIX 2: SAFETY GUARD (ก่อนทุกอย่าง)
+  // FIX 2: SAFETY GUARD
   // ==================================================
   if (!driveSafetyGuard()) {
+
     driveBufISR.targetL = 0;
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
+
+    targetL_filtered = 0;
+    targetR_filtered = 0;
+
     return;
   }
 
   // ==================================================
-  // STAGE 1: READ INPUT → TARGET
+  // STAGE 1: READ INPUT
   // ==================================================
   updateDriveTarget();
 
   // ==================================================
-  // 🔴 FIX 3: RAMP LIMIT (กันกระชากจริง)
+  // 🔴 FIX 3: ANTI-GLITCH FILTER (ใหม่)
+  // ==================================================
+  const float MAX_STEP_INPUT = 0.12f;
+
+  float errL = targetL - targetL_filtered;
+  float errR = targetR - targetR_filtered;
+
+  if (errL > MAX_STEP_INPUT) errL = MAX_STEP_INPUT;
+  if (errL < -MAX_STEP_INPUT) errL = -MAX_STEP_INPUT;
+
+  if (errR > MAX_STEP_INPUT) errR = MAX_STEP_INPUT;
+  if (errR < -MAX_STEP_INPUT) errR = -MAX_STEP_INPUT;
+
+  targetL_filtered += errL;
+  targetR_filtered += errR;
+
+  targetL = targetL_filtered;
+  targetR = targetR_filtered;
+
+  // ==================================================
+  // 🔴 FIX 4: RAMP LIMIT (S-CURVE ชั้นแรก)
   // ==================================================
   static float lastTargetL = 0.0f;
   static float lastTargetR = 0.0f;
 
-  const float maxStep = 0.06f;  // 🔴 ปรับได้ (ยิ่งน้อยยิ่งนุ่ม)
+  const float maxStep = 0.06f;
 
   float dL = targetL - lastTargetL;
   float dR = targetR - lastTargetR;
@@ -744,46 +780,52 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   lastTargetR = targetR;
 
   // ==================================================
-  // BUFFER TARGET (หลัง ramp เท่านั้น)
+  // BUFFER TARGET
   // ==================================================
   driveBufISR.targetL = targetL;
   driveBufISR.targetR = targetR;
 
   // ==================================================
-  // FIX 4: SYSTEM STATE GUARD
+  // FIX 5: SYSTEM STATE GUARD
   // ==================================================
   if (systemState != SystemState::ACTIVE) {
+
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
 
-    // 🔴 reset ramp กันค้าง
     lastTargetL = 0;
     lastTargetR = 0;
+
+    targetL_filtered = 0;
+    targetR_filtered = 0;
 
     return;
   }
 
   // ==================================================
-  // STAGE 2: DRIVE LOGIC (event / protection)
+  // STAGE 2: DRIVE LOGIC
   // ==================================================
   runDrive(now);
 
   // ==================================================
-  // 🔴 FIX 5: FINAL GUARD (กันหลุดหลัง runDrive)
+  // 🔴 FIX 6: FINAL GUARD
   // ==================================================
   if (systemState != SystemState::ACTIVE || driveState == DriveState::LOCKED) {
+
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
 
-    // 🔴 reset ramp กันเด้งตอน unlock
     lastTargetL = 0;
     lastTargetR = 0;
+
+    targetL_filtered = 0;
+    targetR_filtered = 0;
 
     return;
   }
 
   // ==================================================
-  // 🔴 FIX 6: SANITY CLAMP (กันค่าเพี้ยน)
+  // 🔴 FIX 7: SANITY CLAMP
   // ==================================================
   if (targetL > 1.0f) targetL = 1.0f;
   if (targetL < -1.0f) targetL = -1.0f;
@@ -792,12 +834,20 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   if (targetR < -1.0f) targetR = -1.0f;
 
   // ==================================================
-  // STAGE 3: APPLY DRIVE (OWNER OF PWM)
+  // 🔴 SOFT STOP (รองรับ S-CURVE จาก kill)
+  // ==================================================
+  if (killRequest == KillType::SOFT) {
+    targetL *= 0.85f;
+    targetR *= 0.85f;
+  }
+
+  // ==================================================
+  // STAGE 3: APPLY DRIVE
   // ==================================================
   applyDrive(now);
 
   // ==================================================
-  // FIX 7: WATCHDOG UPDATE
+  // WATCHDOG UPDATE
   // ==================================================
   wdDrive.lastUpdate_ms = now;
 
@@ -807,7 +857,6 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   driveBufISR.curL = curL;
   driveBufISR.curR = curR;
 }
-
 
 void setup() {
 
@@ -830,6 +879,11 @@ void setup() {
 
   // kill H-bridge
   HBRIDGE_ALL_OFF();
+
+  // 🔴 reset kill system (สำคัญมาก)
+  killRequest = KillType::NONE;
+  killLatched = false;
+  killISRFlag = false;
 
   // reset control state
   curL = 0;
@@ -867,12 +921,9 @@ void setup() {
 #endif
 
   Serial1.begin(115200);  // iBUS
-  Serial2.begin(115200);  // 🔴 Bluetooth HC-05
+  Serial2.begin(115200);  // Bluetooth
 
-  // ==================================================
-  // 🔴 INIT BLUETOOTH PROTOCOL (สำคัญ)
-  // ==================================================
-  btProtocolInit();   // ✅ ต้องอยู่หลัง Serial2.begin เท่านั้น
+  btProtocolInit();
 
   ibus.begin(Serial1);
   getGimbal().begin();
@@ -885,6 +936,8 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000);
   Wire.setWireTimeout(6000, true);
+
+  delay(50);  // 🔴 ให้ bus stable
 
   // ==================================================
   // ADS INIT
@@ -933,7 +986,18 @@ void setup() {
   digitalWrite(FAN_R, LOW);
 
   // ==================================================
-  // HARD CUT AGAIN (double safety)
+  // 🔴 PWM INIT (ลำดับต้องถูก)
+  // ==================================================
+  setupPWM15K();        // 🔴 ต้องมาก่อน setPWM
+  setupFanPWM15K();     // 🔴 init fan timer ก่อนใช้
+
+  setPWM_L(0);
+  setPWM_R(0);
+  setFanPWM_L(0);
+  setFanPWM_R(0);
+
+  // ==================================================
+  // HARD CUT AGAIN
   // ==================================================
   driveSafe();
 
@@ -947,14 +1011,8 @@ void setup() {
 #endif
 
   // ==================================================
-  // PWM INIT
+  // SERVO
   // ==================================================
-  setPWM_L(0);
-  setPWM_R(0);
-
-  setupPWM15K();
-  setupFanPWM15K();
-
   bladeServo.attach(SERVO_ENGINE_PIN);
   bladeServo.writeMicroseconds(1000);
 
@@ -1014,48 +1072,92 @@ void setup() {
 }
 
 // ============================================================================
-// MAIN LOOP (FINAL - INDUSTRIAL SAFE ORDER)
+// MAIN LOOP (FINAL - CORRECT INDUSTRIAL ORDER)
 // ============================================================================
 void loop() {
 
   uint32_t loopStart_us = micros();
-
   uint32_t now = millis();
 
   // ==================================================
-  // 🔴 1. BLUETOOTH (เร็วสุด)
+  // 🔴 1. INPUT (เร็วสุด)
   // ==================================================
-  btProtocolUpdate();       // STOP / HB / RESET
-  btTelemetryUpdate(now);
+  btProtocolUpdate();   // STOP / HB / RESET
+  taskComms(now);       // RC priority สูงสุด
 
   // ==================================================
-  // 🔴 2. RC INPUT (priority สูงสุด)
+  // 🔴 2. SENSOR UPDATE
   // ==================================================
-  taskComms(now);
+  sensorTask(now);
 
   // ==================================================
-  // 🔴 3. KILL REQUEST (ต้องมาก่อนทุกอย่าง)
+  // 🔴 3. SAFETY EVALUATION
+  // ==================================================
+  taskSafety(now);
+
+  // ==================================================
+  // 🔴 4. APPLY KILL (central decision)
   // ==================================================
   applyKillRequest(now);
 
   // ==================================================
-  // 🔴 4. SENSOR + SAFETY
+  // 🔴 5. CONTROL FREEZE DETECT (industrial)
   // ==================================================
-  sensorTask(now);
-  taskSafety(now);
+  uint32_t dtControl = micros() - lastControlExec_us;
+
+  if (dtControl > 100000UL) {   // 100 ms
+
+    // 🔴 ยิง fault
+    requestFault(FaultCode::LOGIC_WATCHDOG);
+
+    // 🔴 escalate kill
+    killRequest = KillType::HARD;
+  }
 
   // ==================================================
-  // 🔴 5. FAULT RESET
+  // 🔴 6. APPLY KILL RESULT (latch → ISR safe)
+  // ==================================================
+  if (killRequest != KillType::NONE) {
+    killLatched = true;
+    killISRFlag = true;   // 🔴 สำคัญ: กัน ISR ยิง PWM
+  }
+
+  // ==================================================
+  // 🔴 HARD BLOCK (หยุดจริงทั้งระบบ)
+  // ==================================================
+  if (killLatched) {
+
+    // 🔴 HARD SAFE OUTPUT
+    driveSafe();
+
+    // 🔴 clear buffer กัน PWM ค้าง
+    driveBufISR.targetL = 0;
+    driveBufISR.targetR = 0;
+    driveBufISR.curL = 0;
+    driveBufISR.curR = 0;
+
+    // 🔴 ยังให้ระบบ monitor ทำงาน
+    btTelemetryUpdate(now);
+    processFaultReset(now);
+
+    taskBackground(now);
+    taskWatchdog();
+
+    return;
+  }
+
+  // ==================================================
+  // 🔴 7. FAULT RESET
   // ==================================================
   processFaultReset(now);
 
   // ==================================================
-  // 🔴 6. DRIVE EVENTS
+  // 🔴 8. DRIVE EVENTS
   // ==================================================
   taskDriveEvents(now);
 
   // ==================================================
-  // 🔴 7. REAL-TIME CONTROL (หลัง kill เท่านั้น)
+  // 🔴 9. REAL-TIME CONTROL
   // ==================================================
   uint8_t ticksToRun;
 
@@ -1080,40 +1182,30 @@ void loop() {
   }
 
   // ==================================================
-  // 🔴 8. COPY BUFFER (หลัง control)
+  // 🔴 10. COPY BUFFER
   // ==================================================
   copyDriveBuffer();
 
   // ==================================================
-  // 🔴 FAULT DEBUG
-  // ==================================================
-  static FaultCode lastFault = FaultCode::NONE;
-
-  FaultCode currentFault = getActiveFault();
-
-  if (currentFault != lastFault) {
-#if DEBUG_SERIAL
-    Serial.print(F("[FAULT] "));
-    Serial.println(faultCodeToString(currentFault));
-#endif
-    lastFault = currentFault;
-  }
-
-  // ==================================================
-  // 🔴 9. SYSTEM GATE
+  // 🔴 11. SYSTEM GATE
   // ==================================================
   if (!taskSystemGate(now, loopStart_us))
     return;
 
   // ==================================================
-  // 🔴 10. OUTPUT
+  // 🔴 12. OUTPUT
   // ==================================================
   taskBlade(now);
   taskAux(now);
   taskDriverEnable(now);
 
   // ==================================================
-  // 🔴 11. SUPERVISOR
+  // 🔴 13. TELEMETRY
+  // ==================================================
+  btTelemetryUpdate(now);
+
+  // ==================================================
+  // 🔴 14. SUPERVISOR
   // ==================================================
   taskBackground(now);
   taskLoopSupervisor(loopStart_us);
