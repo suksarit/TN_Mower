@@ -1,5 +1,5 @@
 // ============================================================================
-// BluetoothProtocol.cpp (CRC + SAFETY + NO DRIVE CONTROL)
+// BluetoothProtocol.cpp (FINAL - INDUSTRIAL SAFE / ROBUST)
 // ============================================================================
 
 #include "BluetoothProtocol.h"
@@ -12,37 +12,49 @@ extern KillType killRequest;
 #define BT Serial2
 
 // ==============================
+// HEARTBEAT
 static unsigned long lastHB = 0;
 static const unsigned long TIMEOUT = 3000;
+static const unsigned long HB_GRACE = 500;   // 🔴 กัน jitter
 
+// ==============================
+// BUFFER
 static String rx = "";
 
-// 🔴 กันยิง STOP ซ้ำ
+// 🔴 latch กันยิงซ้ำ
 static bool timeoutLatched = false;
+
+// 🔴 STOP debounce
+static unsigned long lastStop_ms = 0;
+static const unsigned long STOP_DEBOUNCE_MS = 200;
 
 // ==================================================
 static void processPacket(String packet);
-static String calcCRC(String data);
-static bool checkCRC(String packet);
-static String removeCRC(String packet);
+static String calcCRC(const String &data);
+static bool checkCRC(const String &packet);
+static String removeCRC(const String &packet);
 static void sendWithCRC(const String &msg);
 
-// 🔴 แยก STOP
 static void emergencyStopSoft(const char* reason);
 static void emergencyStopHard(const char* reason);
 
 // ==============================
-void btProtocolInit() {}
+void btProtocolInit() {
+  lastHB = millis();  // 🔴 init กัน timeout ตอน boot
+}
 
 // ==============================
 void btProtocolUpdate() {
 
   // ==================================================
-  // READ SERIAL
+  // READ SERIAL (robust)
   // ==================================================
   while (BT.available()) {
 
     char c = BT.read();
+
+    // 🔴 filter char แปลก
+    if (c == '\r') continue;
 
     if (c == '\n') {
 
@@ -51,18 +63,21 @@ void btProtocolUpdate() {
 
     } else {
 
-      // 🔴 ป้องกัน fragmentation
-      if (rx.length() < 120)
+      // 🔴 จำกัด buffer
+      if (rx.length() < 120) {
         rx += c;
-      else
-        rx = "";
+      } else {
+        rx = "";  // flush ทิ้ง
+      }
     }
   }
 
   // ==================================================
   // TIMEOUT → HARD STOP
   // ==================================================
-  if (millis() - lastHB > TIMEOUT) {
+  unsigned long now = millis();
+
+  if ((now - lastHB) > (TIMEOUT + HB_GRACE)) {
 
     if (!timeoutLatched) {
       emergencyStopHard("TIMEOUT");
@@ -80,25 +95,42 @@ void btProtocolUpdate() {
 static void processPacket(String packet) {
 
   packet.trim();
-  if (packet.length() == 0) return;
 
-  // 🔴 CRC CHECK
+  // 🔴 packet สั้นเกิน = ignore
+  if (packet.length() < 4) return;
+
+  // ==================================================
+  // CRC CHECK
+  // ==================================================
   if (!checkCRC(packet)) {
-    emergencyStopHard("CRC_FAIL");
+
+    // 🔴 ไม่ kill ทันที → กัน false noise
+#if DEBUG_SERIAL
+    Serial.println(F("[BT] CRC FAIL IGNORE"));
+#endif
     return;
   }
 
   String data = removeCRC(packet);
 
   // ==================================================
-  // 🔴 STOP → SOFT (สำคัญสุด)
+  // 🔴 PRIORITY STOP (SOFT)
   // ==================================================
   if (data == "CMD:STOP") {
 
-    lastHB = millis();        // 🔴 กัน timeout ทับ
+    unsigned long now = millis();
+
+    // 🔴 debounce กัน spam
+    if (now - lastStop_ms > STOP_DEBOUNCE_MS) {
+
+      emergencyStopSoft("REMOTE_STOP");
+      lastStop_ms = now;
+    }
+
+    // 🔴 refresh HB
+    lastHB = now;
     timeoutLatched = false;
 
-    emergencyStopSoft("REMOTE_STOP");
     return;
   }
 
@@ -118,13 +150,14 @@ static void processPacket(String packet) {
   // RESET FAULT
   // ==================================================
   if (data == "CMD:RESET") {
+
     clearFault();
     sendWithCRC("STAT:RESET");
     return;
   }
 
   // ==================================================
-  // BLOCK DRIVE COMMAND
+  // BLOCK DRIVE COMMAND (สำคัญ)
   // ==================================================
   if (data.startsWith("CMD:FWD") ||
       data.startsWith("CMD:BACK") ||
@@ -152,7 +185,7 @@ static void emergencyStopSoft(const char* reason) {
   Serial.println(reason);
 #endif
 
-  sendWithCRC(String("STAT:STOP"));
+  sendWithCRC("STAT:STOP");
 }
 
 // ==============================
@@ -182,7 +215,7 @@ static void sendWithCRC(const String &msg) {
 // ==============================
 // CRC (XOR)
 // ==============================
-static String calcCRC(String data) {
+static String calcCRC(const String &data) {
 
   uint8_t crc = 0;
 
@@ -197,7 +230,7 @@ static String calcCRC(String data) {
 }
 
 // ==============================
-static bool checkCRC(String packet) {
+static bool checkCRC(const String &packet) {
 
   int sep = packet.indexOf('|');
   if (sep == -1) return false;
@@ -209,7 +242,7 @@ static bool checkCRC(String packet) {
 }
 
 // ==============================
-static String removeCRC(String packet) {
+static String removeCRC(const String &packet) {
 
   int sep = packet.indexOf('|');
   if (sep == -1) return "";

@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveStateMachine.cpp 
+// DriveStateMachine.cpp (FINAL - KILL SAFE + INDUSTRIAL)
 // ============================================================================
 
 #include "CurrentController.h"
@@ -16,24 +16,48 @@
 #include "FaultManager.h"
 #include "MotorDriver.h"
 
+// 🔴 ใช้ killRequest จากระบบหลัก
+extern KillType killRequest;
+
 // ============================================================================
 // MAIN STATE MACHINE
 // ============================================================================
-
 void runDrive(uint32_t now)
 {
   static DriveState lastDriveState = DriveState::IDLE;
   static uint32_t limpSafeStart_ms = 0;
 
   // ==================================================
-  // RUNAWAY DETECTION (IMPROVED)
+  // 🔴 PRIORITY: KILL (สูงสุด)
+  // ==================================================
+  if (killRequest == KillType::HARD)
+  {
+    targetL = 0;
+    targetR = 0;
+
+    driveSafe();
+    driveState = DriveState::LOCKED;
+
+    return;
+  }
+
+  if (killRequest == KillType::SOFT)
+  {
+    if (driveState != DriveState::SOFT_STOP &&
+        driveState != DriveState::LOCKED)
+    {
+      driveState = DriveState::SOFT_STOP;
+    }
+  }
+
+  // ==================================================
+  // RUNAWAY DETECTION
   // ==================================================
   constexpr int16_t RUNAWAY_PWM_THRESHOLD = 120;
   constexpr uint32_t RUNAWAY_CONFIRM_MS = 200;
 
   static uint32_t runawayStart_ms = 0;
 
-  // 🔴 FIX: ใช้ deadzone ไม่ใช้ == 0
   bool commandZero =
     (fabs(targetL) < 0.05f && fabs(targetR) < 0.05f);
 
@@ -60,7 +84,7 @@ void runDrive(uint32_t now)
   }
 
   // ==================================================
-  // SAFETY STATE
+  // SAFETY
   // ==================================================
   SafetyState safety = getDriveSafety();
 
@@ -78,10 +102,10 @@ void runDrive(uint32_t now)
       limpSafeStart_ms = 0;
       driveSoftStopStart_ms = 0;
 
-      // 🔴 reset control กันค่าเก่าค้าง
       resetCurrentLoop();
 
-      if (systemState == SystemState::ACTIVE)
+      if (systemState == SystemState::ACTIVE &&
+          killRequest == KillType::NONE)
       {
         driveState = DriveState::RUN;
       }
@@ -108,7 +132,6 @@ void runDrive(uint32_t now)
     // --------------------------------------------------
     case DriveState::LIMP:
     {
-      // 🔴 FIX: scale ไม่สะสม
       const float limpScale = 0.5f;
 
       targetL = constrain(targetL, -1.0f, 1.0f) * limpScale;
@@ -151,12 +174,10 @@ void runDrive(uint32_t now)
       if (driveSoftStopStart_ms == 0)
       {
         driveSoftStopStart_ms = now;
-
-        // 🔴 reset PID ตอนเริ่มหยุด
         resetCurrentLoop();
       }
 
-      // 🔴 รอให้ output ลดจริง
+      // 🔴 รอ ramp ลงจริง
       if ((abs(curL) < 3 && abs(curR) < 3) ||
           (now - driveSoftStopStart_ms >= DRIVE_SOFT_STOP_TIMEOUT_MS))
       {
@@ -175,8 +196,9 @@ void runDrive(uint32_t now)
 
       driveSafe();
 
-      // 🔴 OPTIONAL: ปลด lock ถ้าระบบกลับ safe
-      if (systemState == SystemState::ACTIVE &&
+      // 🔴 ปลด lock เฉพาะกรณีปลอดภัยจริง
+      if (killRequest == KillType::NONE &&
+          systemState == SystemState::ACTIVE &&
           safety == SafetyState::SAFE)
       {
 #if DEBUG_SERIAL
@@ -194,7 +216,6 @@ void runDrive(uint32_t now)
       requestFault(FaultCode::LOGIC_WATCHDOG);
 
       driveSafe();
-
       targetL = 0;
       targetR = 0;
 
@@ -219,7 +240,6 @@ void runDrive(uint32_t now)
     Serial.println((uint8_t)driveState);
 #endif
 
-      // 🔴 reset timer ตอนเข้า SOFT_STOP
     if (driveState == DriveState::SOFT_STOP)
       driveSoftStopStart_ms = now;
 

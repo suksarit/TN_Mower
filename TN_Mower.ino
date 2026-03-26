@@ -1013,12 +1013,49 @@ void setup() {
   wdt_enable(WDTO_1S);
 }
 
+// ============================================================================
+// MAIN LOOP (FINAL - INDUSTRIAL SAFE ORDER)
+// ============================================================================
 void loop() {
 
   uint32_t loopStart_us = micros();
 
+  uint32_t now = millis();
+
   // ==================================================
-  // REAL-TIME CONTROL
+  // 🔴 1. BLUETOOTH (เร็วสุด)
+  // ==================================================
+  btProtocolUpdate();       // STOP / HB / RESET
+  btTelemetryUpdate(now);
+
+  // ==================================================
+  // 🔴 2. RC INPUT (priority สูงสุด)
+  // ==================================================
+  taskComms(now);
+
+  // ==================================================
+  // 🔴 3. KILL REQUEST (ต้องมาก่อนทุกอย่าง)
+  // ==================================================
+  applyKillRequest(now);
+
+  // ==================================================
+  // 🔴 4. SENSOR + SAFETY
+  // ==================================================
+  sensorTask(now);
+  taskSafety(now);
+
+  // ==================================================
+  // 🔴 5. FAULT RESET
+  // ==================================================
+  processFaultReset(now);
+
+  // ==================================================
+  // 🔴 6. DRIVE EVENTS
+  // ==================================================
+  taskDriveEvents(now);
+
+  // ==================================================
+  // 🔴 7. REAL-TIME CONTROL (หลัง kill เท่านั้น)
   // ==================================================
   uint8_t ticksToRun;
 
@@ -1030,10 +1067,10 @@ void loop() {
   if (ticksToRun > 1) ticksToRun = 1;
 
   if (ticksToRun == 1) {
-    uint32_t ctrlStart = micros();
-    uint32_t ctrlNow = millis();
 
-    runControlLoop(ctrlNow, loopStart_us);
+    uint32_t ctrlStart = micros();
+
+    runControlLoop(now, loopStart_us);
 
     uint32_t ctrlTime = micros() - ctrlStart;
 
@@ -1043,35 +1080,9 @@ void loop() {
   }
 
   // ==================================================
-  // COPY BUFFER
+  // 🔴 8. COPY BUFFER (หลัง control)
   // ==================================================
   copyDriveBuffer();
-
-  uint32_t now = millis();
-
-  // ==================================================
-  // 🔴 BLUETOOTH (PRIORITY INPUT)
-  // ==================================================
-  btProtocolUpdate();       // รับคำสั่ง (STOP / HB / RESET)
-  btTelemetryUpdate(now);   // ส่งข้อมูล
-
-  // ==================================================
-  // BACKGROUND (RC มาก่อนเสมอ)
-  // ==================================================
-  taskComms(now);           // RC = priority สูงสุด
-
-  sensorTask(now);
-  processFaultReset(now);
-
-  taskDriveEvents(now);
-
-  // ==================================================
-  // 🔴 SAFETY
-  // ==================================================
-  taskSafety(now);
-
-  // 🔴 🔥 จุดสำคัญที่สุด (คุณยังไม่มี)
-  applyKillRequest(now);
 
   // ==================================================
   // 🔴 FAULT DEBUG
@@ -1089,25 +1100,23 @@ void loop() {
   }
 
   // ==================================================
-  // SYSTEM GATE
+  // 🔴 9. SYSTEM GATE
   // ==================================================
   if (!taskSystemGate(now, loopStart_us))
     return;
 
   // ==================================================
-  // OTHER TASKS
+  // 🔴 10. OUTPUT
   // ==================================================
   taskBlade(now);
   taskAux(now);
   taskDriverEnable(now);
 
   // ==================================================
-  // SUPERVISOR
+  // 🔴 11. SUPERVISOR
   // ==================================================
   taskBackground(now);
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
-
-
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// SafetyManager.cpp 
+// SafetyManager.cpp (FINAL - INDUSTRIAL SAFE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -10,7 +10,8 @@
 // 🔴 รับ killRequest จากระบบหลัก
 extern KillType killRequest;
 
-void driveSafe(); 
+// 🔴 ต้องมีจริงใน Motor layer
+void driveSafe();
 
 // ============================================================================
 // INTERNAL STATE
@@ -20,7 +21,7 @@ static SafetyState driveSafetyInternal = SafetyState::SAFE;
 // 🔴 EMERGENCY LOCK (sticky)
 static bool emergencyLatched = false;
 
-// 🔴 กันยิงซ้ำ
+// 🔴 กันยิง kill ซ้ำ
 static bool killActive = false;
 
 // ============================================================================
@@ -51,10 +52,13 @@ static uint32_t safeStableStart_ms = 0;
 static constexpr uint32_t SAFE_STABLE_TIME_MS = 2000;
 
 // ============================================================================
-// 🔴 APPLY KILL REQUEST (สำคัญที่สุด)
+// 🔴 APPLY KILL REQUEST (CRITICAL SECTION)
 // ============================================================================
 void applyKillRequest(uint32_t now)
 {
+  // ==================================================
+  // NO REQUEST
+  // ==================================================
   if (killRequest == KillType::NONE)
   {
     killActive = false;
@@ -62,44 +66,56 @@ void applyKillRequest(uint32_t now)
   }
 
   // ==================================================
-  // 🔴 SOFT STOP
+  // 🔴 SOFT STOP (ผ่าน DriveRamp)
   // ==================================================
   if (killRequest == KillType::SOFT)
   {
     if (!killActive)
     {
+      // 🔴 ตัด target → ramp ลง
       targetL = 0;
       targetR = 0;
 
       driveState = DriveState::SOFT_STOP;
+
       killActive = true;
     }
+
+    // 🔴 ไม่ latch emergency
   }
 
   // ==================================================
-  // 🔴 HARD STOP
+  // 🔴 HARD STOP (ฉุกเฉินจริง)
   // ==================================================
   else if (killRequest == KillType::HARD)
   {
-    // ตัดจริง
+    // 🔴 ตัด output จริงทันที
     driveSafe();
 
     // 🔴 reset target กันเด้ง
     targetL = 0;
     targetR = 0;
 
+    // 🔴 reset internal current state (กัน torque ค้าง)
+    curL = 0;
+    curR = 0;
+
     driveState = DriveState::LOCKED;
 
+    // 🔴 latch system
     emergencyLatched = true;
+
     killActive = true;
   }
 
-  // 🔴 เคลียร์ request
+  // ==================================================
+  // 🔴 CLEAR REQUEST (one-shot)
+  // ==================================================
   killRequest = KillType::NONE;
 }
 
 // ============================================================================
-// RAW SAFETY
+// RAW SAFETY (NO SIDE EFFECT)
 // ============================================================================
 SafetyState evaluateSafetyRaw(
   const SafetyInput& in,
@@ -112,6 +128,7 @@ SafetyState evaluateSafetyRaw(
     max(fabs(in.curA[0]), fabs(in.curA[1])),
     max(fabs(in.curA[2]), fabs(in.curA[3])));
 
+  // 🔴 LIMP
   if (curMax > th.CUR_LIMP_A ||
       in.tempDriverL > th.TEMP_LIMP_C ||
       in.tempDriverR > th.TEMP_LIMP_C)
@@ -119,12 +136,14 @@ SafetyState evaluateSafetyRaw(
     return SafetyState::LIMP;
   }
 
+  // 🔴 STUCK → LIMP
   if (in.driveEvent == DriveEvent::STUCK_LEFT ||
       in.driveEvent == DriveEvent::STUCK_RIGHT)
   {
     return SafetyState::LIMP;
   }
 
+  // 🔴 WARN
   if (in.driveEvent == DriveEvent::IMBALANCE)
     return SafetyState::WARN;
 
@@ -148,6 +167,9 @@ void updateSafetyStability(
   bool& autoReverseActive,
   DriveEvent& lastDriveEvent)
 {
+  // ==================================================
+  // 🔴 EMERGENCY LATCH (สูงสุด)
+  // ==================================================
   if (raw == SafetyState::EMERGENCY)
   {
     emergencyLatched = true;
@@ -168,6 +190,9 @@ void updateSafetyStability(
 
   SafetyState filtered = driveSafetyInternal;
 
+  // ==================================================
+  // FILTER STATE
+  // ==================================================
   switch (raw)
   {
     case SafetyState::LIMP:
@@ -200,6 +225,9 @@ void updateSafetyStability(
       break;
   }
 
+  // ==================================================
+  // LIMP HOLD (กันเด้ง)
+  // ==================================================
   if (driveSafetyInternal == SafetyState::LIMP)
   {
     if (now - limpHoldStart_ms < LIMP_HOLD_TIME_MS)
@@ -210,6 +238,9 @@ void updateSafetyStability(
 
   driveSafetyInternal = filtered;
 
+  // ==================================================
+  // SAFE STABILITY
+  // ==================================================
   if (raw != SafetyState::SAFE)
   {
     safetyStability = SafetyStabilityState::SAFE_TRANSIENT;
