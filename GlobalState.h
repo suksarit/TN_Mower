@@ -1,5 +1,5 @@
 // ========================================================================================
-// GlobalState.h  
+// GlobalState.h  (FINAL - INDUSTRIAL KILL SYSTEM)
 // ========================================================================================
 
 #pragma once
@@ -16,13 +16,20 @@
 #include "SystemTypes.h"
 
 // ======================================================
-// GLOBAL VARIABLES (DECLARE ONLY)
+// 🔴 KILL SYSTEM (CRITICAL)
 // ======================================================
+// killRequest  = คำสั่งจาก BT / Fault
+// killLatched  = ระบบล็อกจริง
+// killISRFlag  = ใช้ใน ISR (เร็วสุด)
+extern volatile bool killISRFlag;
+extern bool killLatched;
+extern KillType killRequest;
 
-// terrain drag estimator
+// ======================================================
+// GLOBAL VARIABLES
+// ======================================================
 extern float terrainDragAvg;
 extern float controlDt_s;
-extern KillType killRequest;
 extern uint32_t rcLastFrame_ms;
 
 // ======================================================
@@ -101,7 +108,7 @@ inline float currentOffset[4] = {0.0f,0.0f,0.0f,0.0f};
 inline uint8_t overCurCnt[4] = {0,0,0,0};
 
 // ======================================================
-// DRIVE BUFFER
+// DRIVE BUFFER (ISR SAFE)
 // ======================================================
 struct DriveBuffer {
   int16_t targetL;

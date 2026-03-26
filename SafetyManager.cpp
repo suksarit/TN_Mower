@@ -1,5 +1,5 @@
 // ============================================================================
-// SafetyManager.cpp (FINAL - INDUSTRIAL SAFE)
+// SafetyManager.cpp (FINAL - INDUSTRIAL KILL + SAFETY HARDENED)
 // ============================================================================
 
 #include <Arduino.h>
@@ -7,10 +7,12 @@
 #include "SystemTypes.h"
 #include "GlobalState.h"
 
-// 🔴 รับ killRequest จากระบบหลัก
+// 🔴 ใช้จาก GlobalState
+extern volatile bool killISRFlag;
+extern bool killLatched;
 extern KillType killRequest;
 
-// 🔴 ต้องมีจริงใน Motor layer
+// 🔴 ต้องมีใน Motor layer
 void driveSafe();
 
 // ============================================================================
@@ -18,14 +20,14 @@ void driveSafe();
 // ============================================================================
 static SafetyState driveSafetyInternal = SafetyState::SAFE;
 
-// 🔴 EMERGENCY LOCK (sticky)
+// 🔴 EMERGENCY LOCK
 static bool emergencyLatched = false;
 
 // 🔴 กันยิง kill ซ้ำ
 static bool killActive = false;
 
 // ============================================================================
-// HYSTERESIS COUNTERS
+// HYSTERESIS
 // ============================================================================
 static uint8_t limpConfirmCnt = 0;
 static uint8_t warnConfirmCnt = 0;
@@ -33,12 +35,11 @@ static uint8_t warnConfirmCnt = 0;
 static constexpr uint8_t LIMP_CONFIRM_CNT = 3;
 static constexpr uint8_t WARN_CONFIRM_CNT = 2;
 
-// 🔴 HOLD TIME
 static uint32_t limpHoldStart_ms = 0;
 static constexpr uint32_t LIMP_HOLD_TIME_MS = 1500;
 
 // ============================================================================
-// STABILITY TRACKER
+// STABILITY
 // ============================================================================
 enum class SafetyStabilityState : uint8_t {
   SAFE_TRANSIENT = 0,
@@ -52,27 +53,44 @@ static uint32_t safeStableStart_ms = 0;
 static constexpr uint32_t SAFE_STABLE_TIME_MS = 2000;
 
 // ============================================================================
-// 🔴 APPLY KILL REQUEST (CRITICAL SECTION)
+// 🔴 APPLY KILL REQUEST (INDUSTRIAL CORE)
 // ============================================================================
 void applyKillRequest(uint32_t now)
 {
   // ==================================================
-  // NO REQUEST
+  // 🔴 HARD STOP (สูงสุด)
   // ==================================================
-  if (killRequest == KillType::NONE)
+  if (killRequest == KillType::HARD)
   {
-    killActive = false;
+    killLatched = true;
+    killISRFlag = true;   // 🔴 ตัดระดับ ISR
+
+    driveSafe();
+
+    targetL = 0;
+    targetR = 0;
+
+    curL = 0;
+    curR = 0;
+
+    driveState = DriveState::LOCKED;
+
+    emergencyLatched = true;
+    killActive = true;
+
+    killRequest = KillType::NONE;
     return;
   }
 
   // ==================================================
-  // 🔴 SOFT STOP (ผ่าน DriveRamp)
+  // 🔴 SOFT STOP (ผ่าน ramp)
   // ==================================================
   if (killRequest == KillType::SOFT)
   {
     if (!killActive)
     {
-      // 🔴 ตัด target → ramp ลง
+      killLatched = true;
+
       targetL = 0;
       targetR = 0;
 
@@ -81,41 +99,27 @@ void applyKillRequest(uint32_t now)
       killActive = true;
     }
 
-    // 🔴 ไม่ latch emergency
+    killRequest = KillType::NONE;
+    return;
   }
 
   // ==================================================
-  // 🔴 HARD STOP (ฉุกเฉินจริง)
+  // 🔴 CLEAR CONDITION (ต้องปลอดภัยจริง)
   // ==================================================
-  else if (killRequest == KillType::HARD)
+  if (killRequest == KillType::NONE)
   {
-    // 🔴 ตัด output จริงทันที
-    driveSafe();
-
-    // 🔴 reset target กันเด้ง
-    targetL = 0;
-    targetR = 0;
-
-    // 🔴 reset internal current state (กัน torque ค้าง)
-    curL = 0;
-    curR = 0;
-
-    driveState = DriveState::LOCKED;
-
-    // 🔴 latch system
-    emergencyLatched = true;
-
-    killActive = true;
+    if (!faultLatched &&
+        getDriveSafety() == SafetyState::SAFE)
+    {
+      killLatched = false;
+      killISRFlag = false;
+      killActive = false;
+    }
   }
-
-  // ==================================================
-  // 🔴 CLEAR REQUEST (one-shot)
-  // ==================================================
-  killRequest = KillType::NONE;
 }
 
 // ============================================================================
-// RAW SAFETY (NO SIDE EFFECT)
+// RAW SAFETY
 // ============================================================================
 SafetyState evaluateSafetyRaw(
   const SafetyInput& in,
@@ -128,7 +132,6 @@ SafetyState evaluateSafetyRaw(
     max(fabs(in.curA[0]), fabs(in.curA[1])),
     max(fabs(in.curA[2]), fabs(in.curA[3])));
 
-  // 🔴 LIMP
   if (curMax > th.CUR_LIMP_A ||
       in.tempDriverL > th.TEMP_LIMP_C ||
       in.tempDriverR > th.TEMP_LIMP_C)
@@ -136,14 +139,12 @@ SafetyState evaluateSafetyRaw(
     return SafetyState::LIMP;
   }
 
-  // 🔴 STUCK → LIMP
   if (in.driveEvent == DriveEvent::STUCK_LEFT ||
       in.driveEvent == DriveEvent::STUCK_RIGHT)
   {
     return SafetyState::LIMP;
   }
 
-  // 🔴 WARN
   if (in.driveEvent == DriveEvent::IMBALANCE)
     return SafetyState::WARN;
 
@@ -167,32 +168,23 @@ void updateSafetyStability(
   bool& autoReverseActive,
   DriveEvent& lastDriveEvent)
 {
-  // ==================================================
-  // 🔴 EMERGENCY LATCH (สูงสุด)
-  // ==================================================
+  // 🔴 EMERGENCY LATCH
   if (raw == SafetyState::EMERGENCY)
-  {
     emergencyLatched = true;
-  }
 
   if (emergencyLatched)
   {
     driveSafetyInternal = SafetyState::EMERGENCY;
-
     limpConfirmCnt = 0;
     warnConfirmCnt = 0;
 
     safetyStability = SafetyStabilityState::SAFE_TRANSIENT;
     safeStableStart_ms = 0;
-
     return;
   }
 
   SafetyState filtered = driveSafetyInternal;
 
-  // ==================================================
-  // FILTER STATE
-  // ==================================================
   switch (raw)
   {
     case SafetyState::LIMP:
@@ -201,7 +193,6 @@ void updateSafetyStability(
       if (++limpConfirmCnt >= LIMP_CONFIRM_CNT)
       {
         filtered = SafetyState::LIMP;
-        limpConfirmCnt = LIMP_CONFIRM_CNT;
         limpHoldStart_ms = now;
       }
       break;
@@ -212,7 +203,6 @@ void updateSafetyStability(
       if (++warnConfirmCnt >= WARN_CONFIRM_CNT)
       {
         filtered = SafetyState::WARN;
-        warnConfirmCnt = WARN_CONFIRM_CNT;
       }
       break;
 
@@ -225,15 +215,11 @@ void updateSafetyStability(
       break;
   }
 
-  // ==================================================
-  // LIMP HOLD (กันเด้ง)
-  // ==================================================
+  // 🔴 LIMP HOLD
   if (driveSafetyInternal == SafetyState::LIMP)
   {
     if (now - limpHoldStart_ms < LIMP_HOLD_TIME_MS)
-    {
       filtered = SafetyState::LIMP;
-    }
   }
 
   driveSafetyInternal = filtered;
@@ -282,9 +268,7 @@ void forceSafetyState(SafetyState s)
   driveSafetyInternal = s;
 
   if (s == SafetyState::EMERGENCY)
-  {
     emergencyLatched = true;
-  }
 
   limpConfirmCnt = 0;
   warnConfirmCnt = 0;
@@ -294,7 +278,7 @@ void forceSafetyState(SafetyState s)
 }
 
 // ============================================================================
-// CLEAR EMERGENCY LATCH
+// CLEAR LATCH
 // ============================================================================
 void clearSafetyLatch()
 {

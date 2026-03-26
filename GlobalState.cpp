@@ -1,5 +1,5 @@
 // ========================================================================================
-// GlobalState.cpp  
+// GlobalState.cpp  (FINAL - INDUSTRIAL KILL SYSTEM)
 // ========================================================================================
 
 #include "GlobalState.h"
@@ -8,35 +8,40 @@
 // GLOBAL BUFFER INSTANCE
 // ==================================================
 
-// 🔴 ใช้กับ ISR → ต้อง volatile เท่านั้น
-volatile DriveBuffer driveBufISR = {0.0f, 0.0f, 0.0f, 0.0f};
+// 🔴 ใช้กับ ISR → ต้อง volatile
+volatile DriveBuffer driveBufISR = {0, 0, 0, 0};
 
-// 🔴 ใช้ใน main loop → ไม่ต้อง volatile
-DriveBuffer driveBufMain = {0.0f, 0.0f, 0.0f, 0.0f};
+// 🔴 ใช้ใน main loop
+DriveBuffer driveBufMain = {0, 0, 0, 0};
 
 // ==================================================
 // CONTROL / PHYSICS STATE
 // ==================================================
 
-// 🔴 ใช้ใน control loop (ต้องเสถียร)
-float controlDt_s = 0.02f;   // default = 20ms (กันค่า 0 ตอน boot)
+// 🔴 dt ของ control loop (กัน 0 ตอน boot)
+float controlDt_s = 0.02f;
 
-// 🔴 ค่าเฉลี่ยแรงต้าน (ใช้กับ traction / load)
+// 🔴 ค่าเฉลี่ยแรงต้าน
 float terrainDragAvg = 0.0f;
 
 // ==================================================
-// SYSTEM CONTROL STATE
+// 🔴 KILL SYSTEM (INDUSTRIAL CORE)
 // ==================================================
 
-// 🔴 kill system (ใช้ข้าม module)
+// 🔴 request จาก BT / Fault
 KillType killRequest = KillType::NONE;
 
+// 🔴 latch จริงของระบบ
+bool killLatched = false;
+
+// 🔴 ใช้ใน ISR / PWM (เร็วสุด)
+volatile bool killISRFlag = false;
+
 // ==================================================
-// 🔴 RC / COMM STATE (INDUSTRIAL - FRAME BASED)
+// 🔴 RC / COMM STATE
 // ==================================================
 
-// 🔴 timestamp ของ "frame ล่าสุดที่ valid"
-// ใช้ตรวจ FREEZE / TIMEOUT
+// 🔴 timestamp ของ frame ล่าสุด
 uint32_t rcLastFrame_ms = 0;
 
 // ==================================================
