@@ -1,5 +1,5 @@
 // ============================================================================
-// SensorManager.cpp 
+// SensorManager.cpp
 // ============================================================================
 
 #include <Arduino.h>
@@ -21,15 +21,32 @@
 #define PHASE_BUDGET_CONFIRM 3
 #endif
 
-#define CUR_CH_LEFT   0
-#define CUR_CH_RIGHT  1
+#define CUR_CH_1 0
+#define CUR_CH_2 1
+#define CUR_CH_3 2
+#define CUR_CH_4 3
+
+// ==================================================
+// 🔴 PT100 (MAX31865)
+// ==================================================
+#define MAX_CS_L 10
+#define MAX_CS_R 9
+
+#define RREF 430.0f
+#define RNOMINAL 100.0f
+
+Adafruit_MAX31865 maxL = Adafruit_MAX31865(MAX_CS_L);
+Adafruit_MAX31865 maxR = Adafruit_MAX31865(MAX_CS_R);
+
+// 🔴 PT100 INIT FLAG (กัน begin ซ้ำ + boot safe)
+static bool pt100Initialized = false;
 
 // ======================================================
 // FILTER STATE
 // ======================================================
-static float curPrev[4]   = {0};
-static float slopeLPF[4]  = {0};
-static float curFilt[4]   = {0};
+static float curPrev[4] = { 0 };
+static float slopeLPF[4] = { 0 };
+static float curFilt[4] = { 0 };
 
 // ======================================================
 // SPEED STATE
@@ -52,13 +69,11 @@ static uint32_t lastGoodRead_ms = 0;
 static uint32_t i2cTimer = 0;
 
 // ======================================================
-void i2cBusClear()
-{
+void i2cBusClear() {
   pinMode(SDA, INPUT_PULLUP);
   pinMode(SCL, INPUT_PULLUP);
 
-  for (uint8_t i = 0; i < 9; i++)
-  {
+  for (uint8_t i = 0; i < 9; i++) {
     pinMode(SCL, OUTPUT);
     digitalWrite(SCL, LOW);
     delayMicroseconds(5);
@@ -69,10 +84,8 @@ void i2cBusClear()
 }
 
 // ======================================================
-static void resetSensorState()
-{
-  for (uint8_t i = 0; i < 4; i++)
-  {
+static void resetSensorState() {
+  for (uint8_t i = 0; i < 4; i++) {
     curPrev[i] = 0;
     slopeLPF[i] = 0;
     curFilt[i] = 0;
@@ -84,10 +97,8 @@ static void resetSensorState()
 }
 
 // ======================================================
-static void updateI2CRecovery(uint32_t now)
-{
-  switch (i2cState)
-  {
+static void updateI2CRecovery(uint32_t now) {
+  switch (i2cState) {
     case I2CRecoverState::IDLE:
       return;
 
@@ -108,8 +119,12 @@ static void updateI2CRecovery(uint32_t now)
       break;
 
     case I2CRecoverState::REINIT_ADS:
-      adsCurPresent  = adsCur.begin(0x48);
+      adsCurPresent = adsCur.begin(0x48);
       adsVoltPresent = adsVolt.begin(0x49);
+
+      // 🔴 INIT PT100
+      maxL.begin(MAX31865_3WIRE);
+      maxR.begin(MAX31865_3WIRE);
 
       resetSensorState();
 
@@ -127,15 +142,14 @@ static void updateI2CRecovery(uint32_t now)
 }
 
 // ======================================================
-void sensorAdcTrigger()
-{
+void sensorAdcTrigger() {
   if (adcSyncCounter < 255)
     adcSyncCounter++;
 }
 
 // ======================================================
-static bool updateADSCurrent()
-{
+static bool updateADSCurrent() {
+
   static uint8_t ch = 0;
   static bool convRunning = false;
   static uint32_t convStart_us = 0;
@@ -143,46 +157,61 @@ static bool updateADSCurrent()
   uint32_t now_us = micros();
   constexpr uint16_t CONV_TIMEOUT_US = 12000;
 
-  if (!convRunning)
-  {
-    uint16_t mux =
-      ADS1X15_REG_CONFIG_MUX_SINGLE_0 +
-      (ADS_CUR_CH_MAP[ch] << 12);
+  // ===============================
+  // 🔴 เลือก ADS ตาม channel
+  // ===============================
+  Adafruit_ADS1115* ads;
+  uint8_t localCh;
 
-    adsCur.startADCReading(mux, false);
+  if (ch < 2) {
+    ads = &adsCur;  // ตัวที่ 1 (0x48)
+    localCh = ch;   // CH0, CH1
+  } else {
+    ads = &adsVolt;    // ตัวที่ 2 (0x49)
+    localCh = ch - 2;  // CH0, CH1
+  }
+
+  // ===============================
+  // START CONVERSION
+  // ===============================
+  if (!convRunning) {
+
+    uint16_t mux =
+      ADS1X15_REG_CONFIG_MUX_SINGLE_0 + (localCh << 12);
+
+    ads->startADCReading(mux, false);
 
     convStart_us = now_us;
     convRunning = true;
+
     return false;
   }
 
-  if (!adsCur.conversionComplete())
-  {
-    if (now_us - convStart_us > CONV_TIMEOUT_US)
-    {
+  // ===============================
+  // WAIT CONVERSION
+  // ===============================
+  if (!ads->conversionComplete()) {
+
+    if (now_us - convStart_us > CONV_TIMEOUT_US) {
       i2cState = I2CRecoverState::END_BUS;
       convRunning = false;
     }
+
     return false;
   }
 
-  int16_t raw = adsCur.getLastConversionResults();
+  int16_t raw = ads->getLastConversionResults();
   convRunning = false;
 
   float v = raw * ADS1115_LSB_V;
 
   float a =
-    ((v - g_acsOffsetV[ch]) / ACS_SENS_V_PER_A) -
-    currentOffset[ch];
+    ((v - g_acsOffsetV[ch]) / ACS_SENS_V_PER_A) - currentOffset[ch];
 
-  // ==================================================
-  // 🔴 HARD CLAMP (กันค่าเพี้ยน)
-  // ==================================================
+  // HARD CLAMP
   a = constrain(a, -CUR_MAX_PLAUSIBLE, CUR_MAX_PLAUSIBLE);
 
-  // ==================================================
   // SPIKE LIMIT
-  // ==================================================
   constexpr float MAX_DELTA = 15.0f;
 
   float deltaRaw = a - curPrev[ch];
@@ -190,9 +219,7 @@ static bool updateADSCurrent()
   if (fabs(deltaRaw) > MAX_DELTA)
     a = curPrev[ch] + constrain(deltaRaw, -MAX_DELTA, MAX_DELTA);
 
-  // ==================================================
   // FILTER
-  // ==================================================
   slopeLPF[ch] += 0.25f * ((a - curPrev[ch]) - slopeLPF[ch]);
 
   float pred = a + slopeLPF[ch] * 0.3f;
@@ -204,73 +231,106 @@ static bool updateADSCurrent()
               -CUR_MAX_PLAUSIBLE,
               CUR_MAX_PLAUSIBLE);
 
-  // ==================================================
-  // VALID
-  // ==================================================
   curA[ch] += 0.15f * (curUse - curA[ch]);
   curFilt[ch] = curFilt[ch] * 0.9f + curA[ch] * 0.1f;
 
-  if (fabs(curUse) > CUR_TRIP_A_CH[ch])
-  {
-    if (++overCurCnt[ch] >= 3)
-    {
+  // OVERCURRENT CHECK
+  if (fabs(curUse) > CUR_TRIP_A_CH[ch]) {
+    if (++overCurCnt[ch] >= 3) {
       requestFault(FaultCode::OVER_CURRENT);
       return false;
     }
-  }
-  else
-  {
+  } else {
     overCurCnt[ch] = 0;
   }
 
+  // NEXT CHANNEL (0-3)
   ch = (ch + 1) % 4;
 
   return true;
 }
 
 // ======================================================
-bool updateSensors()
-{
+bool updateSensors() {
+
+  // ==================================================
+  // 🔴 INIT PT100 (ทำครั้งเดียวตอน boot)
+  // ==================================================
+  if (!pt100Initialized) {
+    maxL.begin(MAX31865_3WIRE);
+    maxR.begin(MAX31865_3WIRE);
+    pt100Initialized = true;
+  }
+
   if (adcSyncCounter == 0)
     return false;
 
   adcSyncCounter--;
 
-  if (!adsCurPresent)
+  if (!adsCurPresent || !adsVoltPresent)
     return false;
 
-  if (digitalRead(PIN_CUR_TRIP) == LOW)
-  {
+  if (digitalRead(PIN_CUR_TRIP) == LOW) {
     requestFault(FaultCode::OVER_CURRENT);
     return false;
   }
 
+  // ==================================================
+  // 🔴 CURRENT UPDATE
+  // ==================================================
   bool ok = updateADSCurrent();
 
   // ==================================================
   // 🔴 SPEED ESTIMATION (stable)
   // ==================================================
-  speedEstL = speedEstL * 0.9f + curFilt[CUR_CH_LEFT] * 0.1f;
-  speedEstR = speedEstR * 0.9f + curFilt[CUR_CH_RIGHT] * 0.1f;
+  speedEstL = speedEstL * 0.9f + curFilt[CUR_CH_1] * 0.1f;
+  speedEstR = speedEstR * 0.9f + curFilt[CUR_CH_2] * 0.1f;
+
+  // ==================================================
+  // 🔴 READ TEMPERATURE (PT100)
+  // ==================================================
+  float tL = 0.0f;
+  float tR = 0.0f;
+
+  if (pt100Initialized) {
+    tL = maxL.temperature(RNOMINAL, RREF);
+    tR = maxR.temperature(RNOMINAL, RREF);
+  }
+
+  // ==================================================
+  // 🔴 SANITY CHECK
+  // ==================================================
+  if (tL < -50 || tL > 200) {
+    requestFault(FaultCode::SENSOR_TIMEOUT);
+    tL = 80;
+  }
+
+  if (tR < -50 || tR > 200) {
+    requestFault(FaultCode::SENSOR_TIMEOUT);
+    tR = 80;
+  }
+
+  // ==================================================
+  // 🔴 UPDATE GLOBAL
+  // ==================================================
+  tempDriverL = (int16_t)tL;
+  tempDriverR = (int16_t)tR;
 
   uint32_t now = millis();
 
-  if (ok)
-  {
+  if (ok) {
     lastGoodRead_ms = now;
     wdSensor.lastUpdate_ms = now;
   }
 
   // ==================================================
-  // 🔴 SENSOR TIMEOUT (ของจริง)
+  // 🔴 SENSOR TIMEOUT
   // ==================================================
-  if (now - lastGoodRead_ms > 300)
-  {
+  if (now - lastGoodRead_ms > 300) {
     sensorDegraded = true;
   }
 
-  if (now - lastGoodRead_ms > 800)
-  {
+  if (now - lastGoodRead_ms > 800) {
     requestFault(FaultCode::SENSOR_TIMEOUT);
   }
 
@@ -278,44 +338,44 @@ bool updateSensors()
 }
 
 // ======================================================
-float getMotorCurrentL(void)
-{
-  return curFilt[CUR_CH_LEFT];
+// ======================================================
+float getMotorCurrentL(void) {
+  return curFilt[CUR_CH_1];
 }
 
-float getMotorCurrentR(void)
-{
-  return curFilt[CUR_CH_RIGHT];
+float getMotorCurrentR(void) {
+  return curFilt[CUR_CH_2];
 }
 
-float getMotorCurrentSafeL(void)
-{
+// 🔴 (monitor 4 ตัว)
+float getMotorCurrent(uint8_t idx) {
+  if (idx > 3) return 0.0f;
+  return curFilt[idx];
+}
+
+float getMotorCurrentSafeL(void) {
   float c = getMotorCurrentL();
   if (sensorDegraded) c *= 0.6f;
   return c;
 }
 
-float getMotorCurrentSafeR(void)
-{
+float getMotorCurrentSafeR(void) {
   float c = getMotorCurrentR();
   if (sensorDegraded) c *= 0.6f;
   return c;
 }
 
 // ======================================================
-float getSpeedL(void)
-{
+float getSpeedL(void) {
   return speedEstL * 0.02f;
 }
 
-float getSpeedR(void)
-{
+float getSpeedR(void) {
   return speedEstR * 0.02f;
 }
 
 // ======================================================
-void sensorTask(uint32_t now)
-{
+void sensorTask(uint32_t now) {
   uint32_t tStart = micros();
 
   bool ok = updateSensors();
@@ -324,24 +384,19 @@ void sensorTask(uint32_t now)
 
   static uint8_t budgetCnt = 0;
 
-  if (dt > (BUDGET_SENSORS_MS * 1000UL))
-  {
+  if (dt > (BUDGET_SENSORS_MS * 1000UL)) {
     if (++budgetCnt >= PHASE_BUDGET_CONFIRM)
       requestFault(FaultCode::SENSOR_TIMEOUT);
-  }
-  else
-  {
+  } else {
     budgetCnt = 0;
   }
 
-  if (i2cState != I2CRecoverState::IDLE)
-  {
+  if (i2cState != I2CRecoverState::IDLE) {
     updateI2CRecovery(now);
     return;
   }
 
-  if (ok)
-  {
+  if (ok) {
     failStart_ms = 0;
     sensorFailCnt = 0;
 
@@ -359,18 +414,13 @@ void sensorTask(uint32_t now)
   if (failTime > 1200)
     sensorDegraded = true;
 
-  if (failTime > 2000)
-  {
+  if (failTime > 2000) {
     i2cState = I2CRecoverState::END_BUS;
     return;
   }
 
-  if (failTime > 4000)
-  {
+  if (failTime > 4000) {
     if (++sensorFailCnt >= 2)
       requestFault(FaultCode::SENSOR_TIMEOUT);
   }
 }
-
-
-

@@ -77,9 +77,6 @@ void outputMotorPWM();
 constexpr uint8_t MAX_CS_L = 49;
 constexpr uint8_t MAX_CS_R = 48;
 
-Adafruit_MAX31865 maxL(MAX_CS_L);
-Adafruit_MAX31865 maxR(MAX_CS_R);
-
 // PT100 constants
 constexpr float RTD_RNOMINAL = 100.0f;
 constexpr float RTD_RREF = 430.0f;
@@ -954,6 +951,14 @@ void setup() {
     adsVolt.setDataRate(RATE_ADS1115_250SPS);
   }
 
+  // 🔴 ตรวจว่าทั้ง 2 ตัวต้องพร้อม
+  if (!adsCurPresent || !adsVoltPresent) {
+#if DEBUG_SERIAL
+    Serial.println(F("[FAULT] ADS1115 NOT DETECTED"));
+#endif
+    requestFault(FaultCode::SENSOR_TIMEOUT);
+  }
+
   // ==================================================
   // GPIO
   // ==================================================
@@ -988,8 +993,8 @@ void setup() {
   // ==================================================
   // 🔴 PWM INIT (ลำดับต้องถูก)
   // ==================================================
-  setupPWM15K();        // 🔴 ต้องมาก่อน setPWM
-  setupFanPWM15K();     // 🔴 init fan timer ก่อนใช้
+  setupPWM15K();     // 🔴 ต้องมาก่อน setPWM
+  setupFanPWM15K();  // 🔴 init fan timer ก่อนใช้
 
   setPWM_L(0);
   setPWM_R(0);
@@ -1006,8 +1011,6 @@ void setup() {
   // ==================================================
 #if !TEST_MODE
   SPI.begin();
-  maxL.begin(MAX31865_3WIRE);
-  maxR.begin(MAX31865_3WIRE);
 #endif
 
   // ==================================================
@@ -1082,8 +1085,8 @@ void loop() {
   // ==================================================
   // 🔴 1. INPUT (เร็วสุด)
   // ==================================================
-  btProtocolUpdate();   // STOP / HB / RESET
-  taskComms(now);       // RC priority สูงสุด
+  btProtocolUpdate();  // STOP / HB / RESET
+  taskComms(now);      // RC priority สูงสุด
 
   // ==================================================
   // 🔴 2. SENSOR UPDATE
@@ -1105,7 +1108,7 @@ void loop() {
   // ==================================================
   uint32_t dtControl = micros() - lastControlExec_us;
 
-  if (dtControl > 100000UL) {   // 100 ms
+  if (dtControl > 100000UL) {  // 100 ms
 
     // 🔴 ยิง fault
     requestFault(FaultCode::LOGIC_WATCHDOG);
@@ -1119,7 +1122,7 @@ void loop() {
   // ==================================================
   if (killRequest != KillType::NONE) {
     killLatched = true;
-    killISRFlag = true;   // 🔴 สำคัญ: กัน ISR ยิง PWM
+    killISRFlag = true;  // 🔴 สำคัญ: กัน ISR ยิง PWM
   }
 
   // ==================================================
@@ -1211,4 +1214,3 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 }
-
