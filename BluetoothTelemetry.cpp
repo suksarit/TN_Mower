@@ -1,5 +1,5 @@
 // ============================================================================
-// BluetoothTelemetry.cpp (SEND DATA ONLY - FIXED)
+// BluetoothTelemetry.cpp (FULL PROTOCOL READY - CRC16 + SEQ + TYPE)
 // ============================================================================
 
 #include "BluetoothTelemetry.h"
@@ -10,11 +10,33 @@
 #define BT Serial2
 
 // ==============================
+// 🔴 Packet Sequence
+// ==============================
+static uint8_t seq = 0;
+
+// ==============================
 static uint32_t lastSend = 0;
 static const uint32_t TELEMETRY_PERIOD = 200; // ms
 
 // ==============================
-static String calcCRC(String data);
+// 🔴 CRC16 (MODBUS)
+// ==============================
+static uint16_t crc16(uint8_t *data, uint8_t len) {
+
+  uint16_t crc = 0xFFFF;
+
+  for (uint8_t i = 0; i < len; i++) {
+
+    crc ^= data[i];
+
+    for (uint8_t j = 0; j < 8; j++) {
+      if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+      else crc >>= 1;
+    }
+  }
+
+  return crc;
+}
 
 // ==============================
 void btTelemetryInit() {
@@ -22,6 +44,7 @@ void btTelemetryInit() {
 }
 
 // ==============================
+// 🔴 TELEMETRY SEND
 // ==============================
 void btTelemetryUpdate(uint32_t now) {
 
@@ -30,7 +53,7 @@ void btTelemetryUpdate(uint32_t now) {
 
   lastSend = now;
 
-  uint8_t packet[24];
+  uint8_t packet[32];
   uint8_t idx = 0;
 
   // ==================================================
@@ -40,7 +63,13 @@ void btTelemetryUpdate(uint32_t now) {
 
   // reserve LEN
   uint8_t lenIndex = idx++;
-  
+
+  // ==================================================
+  // TYPE + SEQ (FULL PROTOCOL)
+  // ==================================================
+  packet[idx++] = 0x01;     // TYPE = TELEMETRY
+  packet[idx++] = seq++;    // SEQ
+
   // ==================================================
   // DATA
   // ==================================================
@@ -56,26 +85,13 @@ void btTelemetryUpdate(uint32_t now) {
   packet[idx++] = highByte(v);
   packet[idx++] = lowByte(v);
 
- // ===============================
-// Current M1 (x100)
-int16_t i1 = (int16_t)(curA[0] * 100);
-packet[idx++] = highByte(i1);
-packet[idx++] = lowByte(i1);
-
-// Current M2 (x100)
-int16_t i2 = (int16_t)(curA[1] * 100);
-packet[idx++] = highByte(i2);
-packet[idx++] = lowByte(i2);
-
-// Current M3 (x100)
-int16_t i3 = (int16_t)(curA[2] * 100);
-packet[idx++] = highByte(i3);
-packet[idx++] = lowByte(i3);
-
-// Current M4 (x100)
-int16_t i4 = (int16_t)(curA[3] * 100);
-packet[idx++] = highByte(i4);
-packet[idx++] = lowByte(i4);
+  // ===============================
+  // Current M1–M4
+  for (int i = 0; i < 4; i++) {
+    int16_t c = (int16_t)(curA[i] * 100);
+    packet[idx++] = highByte(c);
+    packet[idx++] = lowByte(c);
+  }
 
   // Temp L
   int16_t tL = tempDriverL;
@@ -88,38 +104,22 @@ packet[idx++] = lowByte(i4);
   packet[idx++] = lowByte(tR);
 
   // ==================================================
-  // LEN
+  // LEN (DATA LENGTH)
   // ==================================================
-  packet[lenIndex] = idx - 2; // DATA length
+  packet[lenIndex] = idx - 2;
 
   // ==================================================
-  // CRC (XOR)
+  // CRC16
   // ==================================================
-  uint8_t crc = 0;
-  for (uint8_t i = 0; i < idx; i++) {
-    crc ^= packet[i];
-  }
+  uint16_t crc = crc16(packet, idx);
 
-  packet[idx++] = crc;
+  // LOW → HIGH (สำคัญ)
+  packet[idx++] = crc & 0xFF;
+  packet[idx++] = (crc >> 8) & 0xFF;
 
   // ==================================================
   // SEND
   // ==================================================
   BT.write(packet, idx);
-}
-
-// ==============================
-static String calcCRC(String data) {
-
-  uint8_t crc = 0;
-
-  for (size_t i = 0; i < data.length(); i++) {
-    crc ^= (uint8_t)data[i];
-  }
-
-  char hex[3];
-  sprintf(hex, "%02X", crc);
-
-  return String(hex);
 }
 

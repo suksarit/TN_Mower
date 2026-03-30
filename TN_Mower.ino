@@ -42,6 +42,7 @@
 #include "DriveProtection.h"
 #include "BluetoothProtocol.h"
 #include "BluetoothTelemetry.h "
+#include "BluetoothCommand.h"
 
 // ======================================================
 // FUNCTION PROTOTYPES
@@ -1085,7 +1086,7 @@ void loop() {
   // ==================================================
   // 🔴 1. INPUT (เร็วสุด)
   // ==================================================
-  btProtocolUpdate();  // STOP / HB / RESET
+  btReceiveCommand();  // 🔴 รับคำสั่ง + ACK + update timeout
   taskComms(now);      // RC priority สูงสุด
 
   // ==================================================
@@ -1097,6 +1098,7 @@ void loop() {
   // 🔴 3. SAFETY EVALUATION
   // ==================================================
   taskSafety(now);
+  btSafetyCheck();
 
   // ==================================================
   // 🔴 4. APPLY KILL (central decision)
@@ -1115,14 +1117,8 @@ void loop() {
 
     // 🔴 escalate kill
     killRequest = KillType::HARD;
-  }
-
-  // ==================================================
-  // 🔴 6. APPLY KILL RESULT (latch → ISR safe)
-  // ==================================================
-  if (killRequest != KillType::NONE) {
     killLatched = true;
-    killISRFlag = true;  // 🔴 สำคัญ: กัน ISR ยิง PWM
+    killISRFlag = true;
   }
 
   // ==================================================
