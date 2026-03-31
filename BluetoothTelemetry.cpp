@@ -1,5 +1,5 @@
 // ============================================================================
-// BluetoothTelemetry.cpp (FULL PROTOCOL READY - CRC16 + SEQ + TYPE)
+// BluetoothTelemetry.cpp (SYNC ANDROID 100% - FLAGS + ERROR)
 // ============================================================================
 
 #include "BluetoothTelemetry.h"
@@ -65,46 +65,71 @@ void btTelemetryUpdate(uint32_t now) {
   uint8_t lenIndex = idx++;
 
   // ==================================================
-  // TYPE + SEQ (FULL PROTOCOL)
+  // TYPE + SEQ
   // ==================================================
   packet[idx++] = 0x01;     // TYPE = TELEMETRY
   packet[idx++] = seq++;    // SEQ
 
   // ==================================================
-  // DATA
+  // 🔴 DATA (SYNC ANDROID)
   // ==================================================
 
-  // Fault
+  // =========================
+  // 🔴 FLAGS (bit mask)
+  // =========================
+  uint8_t flags = 0;
+
+  // bit0 = SYSTEM LOCK / NOT ACTIVE
+  if (systemState != SystemState::ACTIVE)
+    flags |= 0x01;
+
+  // bit1 = FAILSAFE (RC lost)
+  if (ibusCommLost)
+    flags |= 0x02;
+
+  // bit2 = ENGINE RUNNING
+  if (engineRunning)
+    flags |= 0x04;
+
+  packet[idx++] = flags;
+
+  // =========================
+  // 🔴 ERROR CODE
+  // =========================
   packet[idx++] = (uint8_t)getActiveFault();
 
-  // System state
-  packet[idx++] = (uint8_t)systemState;
-
-  // Voltage (x100)
+  // =========================
+  // 🔴 VOLTAGE (x100)
+  // =========================
   int16_t v = (int16_t)(engineVolt * 100);
   packet[idx++] = highByte(v);
   packet[idx++] = lowByte(v);
 
-  // ===============================
-  // Current M1–M4
+  // =========================
+  // 🔴 CURRENT M1–M4 (x100)
+  // =========================
   for (int i = 0; i < 4; i++) {
     int16_t c = (int16_t)(curA[i] * 100);
     packet[idx++] = highByte(c);
     packet[idx++] = lowByte(c);
   }
 
-  // Temp L
+  // =========================
+  // 🔴 TEMP LEFT
+  // =========================
   int16_t tL = tempDriverL;
   packet[idx++] = highByte(tL);
   packet[idx++] = lowByte(tL);
 
-  // Temp R
+  // =========================
+  // 🔴 TEMP RIGHT
+  // =========================
   int16_t tR = tempDriverR;
   packet[idx++] = highByte(tR);
   packet[idx++] = lowByte(tR);
 
   // ==================================================
-  // LEN (DATA LENGTH)
+  // LEN
   // ==================================================
   packet[lenIndex] = idx - 2;
 
@@ -113,7 +138,7 @@ void btTelemetryUpdate(uint32_t now) {
   // ==================================================
   uint16_t crc = crc16(packet, idx);
 
-  // LOW → HIGH (สำคัญ)
+  // LOW → HIGH (ต้องตรง Android)
   packet[idx++] = crc & 0xFF;
   packet[idx++] = (crc >> 8) & 0xFF;
 
