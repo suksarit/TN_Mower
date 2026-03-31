@@ -39,6 +39,7 @@ extern float targetR_filtered;
 extern float terrainDragAvg;
 extern float controlDt_s;
 extern uint32_t rcLastFrame_ms;
+extern uint16_t rcLight;
 
 // ======================================================
 // DRIVER STATE ENUM

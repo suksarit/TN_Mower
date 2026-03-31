@@ -854,6 +854,20 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   // ==================================================
   driveBufISR.curL = curL;
   driveBufISR.curR = curR;
+
+}
+
+void updateLightControl()
+{
+  // 🔴 กด = ON
+  if (rcLight > 1500)
+  {
+    digitalWrite(PIN_LIGHT, HIGH);
+  }
+  else
+  {
+    digitalWrite(PIN_LIGHT, LOW);
+  }
 }
 
 void setup() {
@@ -1001,6 +1015,12 @@ void setup() {
   setPWM_R(0);
   setFanPWM_L(0);
   setFanPWM_R(0);
+
+// ==================================================
+  // 🔴 ไฟส่องสว่าง
+  // ==================================================
+  pinMode(PIN_LIGHT, OUTPUT);
+  digitalWrite(PIN_LIGHT, LOW);
 
   // ==================================================
   // HARD CUT AGAIN
@@ -1209,4 +1229,10 @@ void loop() {
   taskBackground(now);
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
+
+  
+  // ==================================================
+  // 🔴 15. ไฟส่องสว่าง
+  // ==================================================
+  updateLightControl();
 }

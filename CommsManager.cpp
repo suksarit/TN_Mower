@@ -146,6 +146,7 @@ void updateRcCache()
   uint16_t eng = ibus.readChannel(CH_ENGINE);
   uint16_t ign = ibus.readChannel(CH_IGNITION);
   uint16_t sta = ibus.readChannel(CH_STARTER);
+  uint16_t light = ibus.readChannel(CH_LIGHT);
 
   // ==================================================
   // VALIDATION
@@ -155,7 +156,8 @@ void updateRcCache()
     (str >= 900 && str <= 2100) &&
     (eng >= 900 && eng <= 2100) &&
     (ign >= 900 && ign <= 2100) &&
-    (sta >= 900 && sta <= 2100);
+    (sta >= 900 && sta <= 2100) &&
+    (light >= 900 && light <= 2100);
 
   if (!valid)
   {
@@ -194,6 +196,7 @@ void updateRcCache()
   rcEngine   = eng;
   rcIgnition = ign;
   rcStarter  = sta;
+  rcLight = light;
 
   lastThr = thr;
   lastStr = str;
