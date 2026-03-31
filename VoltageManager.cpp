@@ -1,5 +1,5 @@
 // ============================================================================
-// VoltageManager.cpp 
+// VoltageManager.cpp (FIXED VERSION - SAFE & REAL USE)
 // ============================================================================
 
 #include <Arduino.h>
@@ -7,10 +7,12 @@
 #include "VoltageManager.h"
 #include "GlobalState.h"
 #include "HardwareConfig.h"
-#include "FaultManager.h"   
+#include "FaultManager.h"
 
-void updateVoltageWarning(uint32_t now)
-{
+// ============================================================================
+// 🔴 MAIN UPDATE FUNCTION
+// ============================================================================
+void updateVoltageWarning(uint32_t now) {
   const float HYST = 0.5f;
   const uint16_t WARN_BLINK = 500;
   const uint16_t CRIT_BLINK = 150;
@@ -22,7 +24,7 @@ void updateVoltageWarning(uint32_t now)
   // ==================================================
   // 🔴 MEDIAN FILTER (3 sample)
   // ==================================================
-  static float vHist[3] = {24.0f, 24.0f, 24.0f};
+  static float vHist[3] = { 24.0f, 24.0f, 24.0f };
 
   vHist[0] = vHist[1];
   vHist[1] = vHist[2];
@@ -32,38 +34,40 @@ void updateVoltageWarning(uint32_t now)
   float b = vHist[1];
   float c = vHist[2];
 
-  float v24 =
-    max(min(a, b),
-    min(max(a, b), c));  // median 3
+  float v24 = max(min(a, b), min(max(a, b), c));
 
   // ==================================================
-  // 🔴 SENSOR SANITY
+  // 🔴 SENSOR SANITY (FIX: no fake value)
   // ==================================================
-  if (v24 < 10.0f || v24 > 35.0f)
-  {
+  if (v24 < 10.0f || v24 > 35.0f) {
 #if DEBUG_SERIAL
-    Serial.println(F("[VOLT] SENSOR FAULT"));
+    Serial.println(F("[VOLT] SENSOR INVALID"));
 #endif
+
     requestFault(FaultCode::SENSOR_TIMEOUT);
-    v24 = 24.0f;  // fallback
+
+    // fail-safe → เตือนทันที
+    digitalWrite(PIN_BUZZER, HIGH);
+    digitalWrite(RELAY_WARN, HIGH);
+
+    level = 2;
+    return;
   }
 
   // ==================================================
-  // 🔴 SENSOR TIMEOUT
+  // 🔴 SENSOR TIMEOUT (FIX: fail-safe)
   // ==================================================
-  if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms)
-  {
+  if (now - wdSensor.lastUpdate_ms > wdSensor.timeout_ms) {
 #if DEBUG_SERIAL
     Serial.println(F("[VOLT] SENSOR TIMEOUT"));
 #endif
 
-    digitalWrite(PIN_BUZZER, LOW);
-    digitalWrite(RELAY_WARN, LOW);
-
-    level = 0;
-    buzzerOn = false;
-
     requestFault(FaultCode::SENSOR_TIMEOUT);
+
+    digitalWrite(PIN_BUZZER, HIGH);
+    digitalWrite(RELAY_WARN, HIGH);
+
+    level = 2;
     return;
   }
 
@@ -72,8 +76,7 @@ void updateVoltageWarning(uint32_t now)
   // ==================================================
   uint8_t newLevel = level;
 
-  switch (level)
-  {
+  switch (level) {
     case 0:
       if (v24 < V_WARN_LOW)
         newLevel = 1;
@@ -93,66 +96,58 @@ void updateVoltageWarning(uint32_t now)
   }
 
   // ==================================================
-  // 🔴 CHANGE DETECT (debounce)
+  // 🔴 CHANGE DETECT (FIX: debounce bug)
   // ==================================================
   static uint32_t levelChangeStart = 0;
+  static bool pendingChange = false;
 
-  if (newLevel != level)
-  {
-    if (levelChangeStart == 0)
-    {
+  if (newLevel != level) {
+    if (!pendingChange) {
+      pendingChange = true;
       levelChangeStart = now;
-    }
-    else if (now - levelChangeStart > 100) // debounce 100ms
-    {
+    } else if (now - levelChangeStart > 100) {
       level = newLevel;
       lastToggle_ms = now;
       buzzerOn = false;
-      levelChangeStart = 0;
+      pendingChange = false;
     }
-  }
-  else
-  {
-    levelChangeStart = 0;
+  } else {
+    pendingChange = false;
   }
 
   // ==================================================
   // 🔴 OUTPUT CONTROL
   // ==================================================
-  switch (level)
-  {
+  switch (level) {
     case 0:
       digitalWrite(PIN_BUZZER, LOW);
       digitalWrite(RELAY_WARN, LOW);
       break;
 
     case 1:
-    {
-      digitalWrite(RELAY_WARN, HIGH);
-
-      if (now - lastToggle_ms >= WARN_BLINK)
       {
-        lastToggle_ms = now;
-        buzzerOn = !buzzerOn;
-      }
+        digitalWrite(RELAY_WARN, HIGH);
 
-      digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
-      break;
-    }
+        if (now - lastToggle_ms >= WARN_BLINK) {
+          lastToggle_ms = now;
+          buzzerOn = !buzzerOn;
+        }
+
+        digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
+        break;
+      }
 
     case 2:
-    {
-      digitalWrite(RELAY_WARN, HIGH);
-
-      if (now - lastToggle_ms >= CRIT_BLINK)
       {
-        lastToggle_ms = now;
-        buzzerOn = !buzzerOn;
-      }
+        digitalWrite(RELAY_WARN, HIGH);
 
-      digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
-      break;
-    }
+        if (now - lastToggle_ms >= CRIT_BLINK) {
+          lastToggle_ms = now;
+          buzzerOn = !buzzerOn;
+        }
+
+        digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
+        break;
+      }
   }
 }
-
