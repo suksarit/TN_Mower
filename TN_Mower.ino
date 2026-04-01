@@ -854,18 +854,13 @@ void runControlLoop(uint32_t now, uint32_t loopStart_us) {
   // ==================================================
   driveBufISR.curL = curL;
   driveBufISR.curR = curR;
-
 }
 
-void updateLightControl()
-{
+void updateLightControl() {
   // 🔴 กด = ON
-  if (rcLight > 1500)
-  {
+  if (rcLight > 1500) {
     digitalWrite(PIN_LIGHT, HIGH);
-  }
-  else
-  {
+  } else {
     digitalWrite(PIN_LIGHT, LOW);
   }
 }
@@ -1016,7 +1011,7 @@ void setup() {
   setFanPWM_L(0);
   setFanPWM_R(0);
 
-// ==================================================
+  // ==================================================
   // 🔴 ไฟส่องสว่าง
   // ==================================================
   pinMode(PIN_LIGHT, OUTPUT);
@@ -1095,9 +1090,6 @@ void setup() {
   wdt_enable(WDTO_1S);
 }
 
-// ============================================================================
-// MAIN LOOP (FINAL - CORRECT INDUSTRIAL ORDER)
-// ============================================================================
 void loop() {
 
   uint32_t loopStart_us = micros();
@@ -1106,8 +1098,63 @@ void loop() {
   // ==================================================
   // 🔴 1. INPUT (เร็วสุด)
   // ==================================================
-  btReceiveCommand();  // 🔴 รับคำสั่ง + ACK + update timeout
-  taskComms(now);      // RC priority สูงสุด
+
+  // 🔴 HANDSHAKE + COMMAND RX (แก้ใหม่)
+  static bool handshakeDone = false;
+  static uint32_t lastBtRx = 0;
+  static uint8_t state = 0;
+  static uint8_t b1 = 0;
+
+  // 🔴 reset handshake ถ้าเงียบเกิน 2 วิ
+  if (millis() - lastBtRx > 2000) {
+    handshakeDone = false;
+    state = 0;
+  }
+
+  if (!handshakeDone) {
+
+    while (Serial2.available()) {
+
+      uint8_t b = Serial2.read();
+      lastBtRx = millis();
+
+      if (state == 0) {
+
+        if (b == 0x55) {
+          b1 = b;
+          state = 1;
+        }
+
+      } else if (state == 1) {
+
+        if (b == 0xAA) {
+
+          // 🔴 ตอบกลับ
+          Serial2.write(0xAA);
+          Serial2.write(0x55);
+
+          handshakeDone = true;
+
+#if DEBUG_SERIAL
+          Serial.println(F("[BT] HANDSHAKE OK"));
+#endif
+        }
+
+        state = 0;
+      }
+    }
+
+  } else {
+
+    // 🔴 ทำงานปกติ
+    btReceiveCommand();
+
+    if (Serial2.available()) {
+      lastBtRx = millis();
+    }
+  }
+
+  taskComms(now);  // RC priority สูงสุด
 
   // ==================================================
   // 🔴 2. SENSOR UPDATE
@@ -1130,12 +1177,10 @@ void loop() {
   // ==================================================
   uint32_t dtControl = micros() - lastControlExec_us;
 
-  if (dtControl > 100000UL) {  // 100 ms
+  if (dtControl > 100000UL) {
 
-    // 🔴 ยิง fault
     requestFault(FaultCode::LOGIC_WATCHDOG);
 
-    // 🔴 escalate kill
     killRequest = KillType::HARD;
     killLatched = true;
     killISRFlag = true;
@@ -1146,16 +1191,13 @@ void loop() {
   // ==================================================
   if (killLatched) {
 
-    // 🔴 HARD SAFE OUTPUT
     driveSafe();
 
-    // 🔴 clear buffer กัน PWM ค้าง
     driveBufISR.targetL = 0;
     driveBufISR.targetR = 0;
     driveBufISR.curL = 0;
     driveBufISR.curR = 0;
 
-    // 🔴 ยังให้ระบบ monitor ทำงาน
     btTelemetryUpdate(now);
     processFaultReset(now);
 
@@ -1230,9 +1272,9 @@ void loop() {
   taskLoopSupervisor(loopStart_us);
   taskWatchdog();
 
-  
   // ==================================================
   // 🔴 15. ไฟส่องสว่าง
   // ==================================================
   updateLightControl();
 }
+
