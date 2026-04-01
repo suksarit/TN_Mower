@@ -150,16 +150,15 @@ Serial → Debug
 ส่วนที่ 4 : หน้าที่ช่องสัญญาณรีโมท
 =====================================================================
 
-CH1 → เลี้ยวซ้าย-ขวา
-CH2 → เดินหน้า-ถอยหลัง
-CH6 → Ignition ON/OFF
-CH7 → Reset
-CH8 → คันเร่งเครื่องยนต์
-CH10 → Starter
-
-Storm32:
-CH3 → Pitch
-CH9 → Yaw
+Channel	ใช้ทำอะไร	ที่มาจากโค้ด
+CH1	เลี้ยวซ้าย-ขวา	CH_STEER
+CH2	เดินหน้า-ถอย	CH_THROTTLE
+CH3	🎥 Gimbal Pitch (ก้ม/เงย)	STORM32_CH_PITCH = 3
+CH5	💡 ไฟ	CH_LIGHT
+CH6	🔑 Ignition	CH_IGNITION
+CH8	⚙️ คันเร่งเครื่อง (Servo)	CH_ENGINE
+CH9	🎥 Gimbal Yaw	STORM32_CH_YAW
+CH10	🔥 Starter	CH_STARTER
 
 Deadband:
 1450–1550 = Neutral
