@@ -644,7 +644,7 @@ void taskWatchdog() {
   bool wdHealthy =
     !wdSensor.faulted && !wdComms.faulted && !wdDrive.faulted && !wdBlade.faulted && !faultLatched;
 
-  // 🔴 เพิ่มเงื่อนไข: system ต้อง ACTIVE เท่านั้น
+  // 🔴 เงื่อนไข: system ต้อง ACTIVE เท่านั้น
   if (wdHealthy && systemState == SystemState::ACTIVE) {
     wdt_reset();
 

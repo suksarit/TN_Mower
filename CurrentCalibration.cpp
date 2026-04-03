@@ -5,7 +5,7 @@
 #include <Arduino.h>
 #include "CurrentCalibration.h"
 #include "GlobalState.h"
-#include "FaultManager.h"   // 🔴 เพิ่ม
+#include "FaultManager.h"   
 
 // ======================================================
 // CONFIG

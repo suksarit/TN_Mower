@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include <Arduino.h>
+
 #include "FaultManager.h"
 #include "GlobalState.h"
 #include "SafetyManager.h"
