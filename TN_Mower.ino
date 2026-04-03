@@ -40,7 +40,6 @@
 #include "VoltageManager.h"
 #include "ThermalManager.h"
 #include "DriveProtection.h"
-#include "BluetoothProtocol.h"
 #include "BluetoothTelemetry.h "
 #include "BluetoothCommand.h"
 
@@ -225,19 +224,6 @@ inline void copyDriveBuffer() {
   driveBufMain.targetR = tR1;
   driveBufMain.curL = cL1;
   driveBufMain.curR = cR1;
-}
-
-uint8_t crc8_update(uint8_t crc, uint8_t data) {
-  crc ^= data;
-
-  for (uint8_t i = 0; i < 8; i++) {
-    if (crc & 0x80)
-      crc = (crc << 1) ^ 0x07;
-    else
-      crc <<= 1;
-  }
-
-  return crc;
 }
 
 // ======================================================
@@ -928,9 +914,7 @@ void setup() {
 #endif
 
   Serial1.begin(115200);  // iBUS
-  Serial2.begin(115200);  // Bluetooth
-
-  btProtocolInit();
+  Serial2.begin(115200);  // Bluetooth  
 
   ibus.begin(Serial1);
   getGimbal().begin();
