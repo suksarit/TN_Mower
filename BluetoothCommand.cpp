@@ -33,7 +33,28 @@ static uint16_t crc16(uint8_t *data, uint8_t len) {
 }
 
 // ==================================================
-// RECEIVE COMMAND (NON-BLOCKING STATE MACHINE)
+// SEND ACK
+// ==================================================
+static void sendAck(uint8_t seq, uint8_t status) {
+
+  uint8_t pkt[6];
+  uint8_t idx = 0;
+
+  pkt[idx++] = 0xAB;   // ACK header
+  pkt[idx++] = 2;      // LEN
+  pkt[idx++] = seq;
+  pkt[idx++] = status;
+
+  uint16_t crc = crc16(pkt, idx);
+
+  pkt[idx++] = crc & 0xFF;
+  pkt[idx++] = (crc >> 8) & 0xFF;
+
+  BT.write(pkt, idx);
+}
+
+// ==================================================
+// RECEIVE COMMAND (NON-BLOCKING + ACK + SAFE)
 // ==================================================
 void btReceiveCommand() {
 
@@ -63,7 +84,7 @@ void btReceiveCommand() {
       // =========================
       case 1:
         if (b < 2 || b > 20) {
-          state = 0;  // invalid → reset
+          state = 0;  // invalid
         } else {
           len = b;
           idx = 0;
@@ -91,9 +112,10 @@ void btReceiveCommand() {
         break;
 
       // =========================
-      // CRC HIGH
+      // CRC HIGH + PROCESS
       // =========================
       case 4: {
+
         uint16_t crcRx = (b << 8) | crcLow;
 
         uint8_t temp[40];
@@ -105,16 +127,13 @@ void btReceiveCommand() {
 
         if (crcCalc == crcRx) {
 
-          // =========================
-          // PARSE COMMAND
-          // =========================
           uint8_t i = 0;
-
           uint8_t seq = buffer[i++];
           uint8_t cmd = buffer[i++];
 
-          // 🔴 กันซ้ำ
-          if (seq != lastCmdSeq) {
+          bool isDuplicate = (seq == lastCmdSeq);
+
+          if (!isDuplicate) {
 
             lastCmdSeq = seq;
             lastCmdTime = millis();
@@ -125,11 +144,11 @@ void btReceiveCommand() {
               // 🔴 EMERGENCY STOP (CRITICAL)
               // ======================================
               case 0x10:
-
                 killRequest = KillType::HARD;
                 killLatched = true;
                 killISRFlag = true;
 
+                sendAck(seq, 0x00);
                 break;
 
               // ======================================
@@ -137,18 +156,30 @@ void btReceiveCommand() {
               // ======================================
               case 0x11:
                 systemState = SystemState::ACTIVE;
+
+                sendAck(seq, 0x00);
                 break;
 
               // ======================================
               // RESET FAULT
               // ======================================
               case 0x12:
-                  clearFault();
+                clearFault();   // ต้อง include FaultManager.h
+
+                sendAck(seq, 0x00);
                 break;
 
+              // ======================================
+              // UNKNOWN
+              // ======================================
               default:
+                sendAck(seq, 0x01);
                 break;
             }
+
+          } else {
+            // 🔴 duplicate → ACK ซ้ำให้ Android หยุด retry
+            sendAck(seq, 0x00);
           }
         }
 
