@@ -4,6 +4,7 @@
 
 #include "BluetoothCommand.h"
 #include "GlobalState.h"
+#include "FaultManager.h"
 
 #define BT Serial2
 
@@ -142,7 +143,7 @@ void btReceiveCommand() {
               // RESET FAULT
               // ======================================
               case 0x12:
-                clearFault();
+                  clearFault();
                 break;
 
               default:
