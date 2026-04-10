@@ -32,71 +32,140 @@ static uint16_t crc16(uint8_t *data, uint8_t len) {
 }
 
 // ==================================================
-// RECEIVE COMMAND
+// RECEIVE COMMAND (NON-BLOCKING STATE MACHINE)
 // ==================================================
 void btReceiveCommand() {
 
-  if (!BT.available()) return;
+  static uint8_t state = 0;
+  static uint8_t len = 0;
+  static uint8_t idx = 0;
+  static uint8_t buffer[32];
+  static uint8_t crcLow = 0;
 
-  if (BT.read() != 0xAA) return;
+  while (BT.available()) {
 
-  uint8_t len = BT.read();
-  if (len < 2 || len > 20) return;
+    uint8_t b = BT.read();
 
-  uint8_t buffer[32];
-  BT.readBytes(buffer, len);
+    switch (state) {
 
-  uint8_t crcLow = BT.read();
-  uint8_t crcHigh = BT.read();
-  uint16_t crcRx = (crcHigh << 8) | crcLow;
+      // =========================
+      // WAIT HEADER
+      // =========================
+      case 0:
+        if (b == 0xAA) {
+          state = 1;
+        }
+        break;
 
-  uint8_t temp[40];
-  temp[0] = 0xAA;
-  temp[1] = len;
-  memcpy(&temp[2], buffer, len);
+      // =========================
+      // READ LEN
+      // =========================
+      case 1:
+        if (b < 2 || b > 20) {
+          state = 0;  // invalid → reset
+        } else {
+          len = b;
+          idx = 0;
+          state = 2;
+        }
+        break;
 
-  if (crc16(temp, len + 2) != crcRx) return;
+      // =========================
+      // READ PAYLOAD
+      // =========================
+      case 2:
+        buffer[idx++] = b;
 
-  uint8_t idx = 0;
+        if (idx >= len) {
+          state = 3;
+        }
+        break;
 
-  // 🔴 FORMAT: SEQ + CMD
-  uint8_t seq = buffer[idx++];
-  uint8_t cmd = buffer[idx++];
+      // =========================
+      // CRC LOW
+      // =========================
+      case 3:
+        crcLow = b;
+        state = 4;
+        break;
 
-  // กันซ้ำ
-  if (seq == lastCmdSeq) return;
-  lastCmdSeq = seq;
+      // =========================
+      // CRC HIGH
+      // =========================
+      case 4: {
+        uint16_t crcRx = (b << 8) | crcLow;
 
-  lastCmdTime = millis();
+        uint8_t temp[40];
+        temp[0] = 0xAA;
+        temp[1] = len;
+        memcpy(&temp[2], buffer, len);
 
-  // ==================================================
-  // COMMAND
-  // ==================================================
-  switch (cmd) {
+        uint16_t crcCalc = crc16(temp, len + 2);
 
-    case 0x10:  // STOP
+        if (crcCalc == crcRx) {
 
-      killRequest = KillType::HARD;
-      killLatched = true;
-      killISRFlag = true;
+          // =========================
+          // PARSE COMMAND
+          // =========================
+          uint8_t i = 0;
 
-      break;
+          uint8_t seq = buffer[i++];
+          uint8_t cmd = buffer[i++];
 
-    case 0x11:
-      break;
+          // 🔴 กันซ้ำ
+          if (seq != lastCmdSeq) {
 
-    case 0x12:
-      break;
+            lastCmdSeq = seq;
+            lastCmdTime = millis();
 
-    default:
-      break;
+            switch (cmd) {
+
+              // ======================================
+              // 🔴 EMERGENCY STOP (CRITICAL)
+              // ======================================
+              case 0x10:
+
+                killRequest = KillType::HARD;
+                killLatched = true;
+                killISRFlag = true;
+
+                break;
+
+              // ======================================
+              // START
+              // ======================================
+              case 0x11:
+                systemState = SystemState::ACTIVE;
+                break;
+
+              // ======================================
+              // RESET FAULT
+              // ======================================
+              case 0x12:
+                clearFault();
+                break;
+
+              default:
+                break;
+            }
+          }
+        }
+
+        // reset state machine
+        state = 0;
+        break;
+      }
+
+      default:
+        state = 0;
+        break;
+    }
   }
 }
 
-// ==================================================
-// FAILSAFE
-// ==================================================
 void btSafetyCheck() {
+
+  if (killLatched) return;  // 🔴 กันยิงซ้ำ
 
   if (lastCmdTime == 0) return;
 
