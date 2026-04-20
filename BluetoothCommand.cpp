@@ -1,5 +1,5 @@
 // ============================================================================
-// BluetoothCommand.cpp (CLEAN + MATCH ANDROID)
+// BluetoothCommand.cpp (FINAL + FIX LINK ERROR + MATCH PROTOCOL)
 // ============================================================================
 
 #include "BluetoothCommand.h"
@@ -10,11 +10,14 @@
 
 #define CMD_TIMEOUT 2000  // ms
 
+// ==================================================
+// 🔴 STATE (GLOBAL STATIC)
+// ==================================================
 static uint8_t lastCmdSeq = 0;
 static uint32_t lastCmdTime = 0;
 
 // ==================================================
-// CRC16
+// 🔴 CRC16 (MODBUS - ตรง Android)
 // ==================================================
 static uint16_t crc16(uint8_t *data, uint8_t len) {
 
@@ -24,8 +27,10 @@ static uint16_t crc16(uint8_t *data, uint8_t len) {
     crc ^= data[i];
 
     for (uint8_t j = 0; j < 8; j++) {
-      if (crc & 1) crc = (crc >> 1) ^ 0xA001;
-      else crc >>= 1;
+      if (crc & 1)
+        crc = (crc >> 1) ^ 0xA001;
+      else
+        crc >>= 1;
     }
   }
 
@@ -33,19 +38,28 @@ static uint16_t crc16(uint8_t *data, uint8_t len) {
 }
 
 // ==================================================
-// SEND ACK
+// 🔴 SEND ACK (PROTOCOL เดียวกับ Telemetry)
 // ==================================================
 static void sendAck(uint8_t seq, uint8_t status) {
 
-  uint8_t pkt[6];
+  uint8_t pkt[10];
   uint8_t idx = 0;
 
-  pkt[idx++] = 0xAB;   // ACK header
-  pkt[idx++] = 2;      // LEN
+  // HEADER
+  pkt[idx++] = 0xAA;
+  pkt[idx++] = 0x55;
+
+  uint8_t lenIndex = idx++;
+
+  // PAYLOAD
   pkt[idx++] = seq;
   pkt[idx++] = status;
 
-  uint16_t crc = crc16(pkt, idx);
+  // LEN (payload only)
+  pkt[lenIndex] = idx - 3;
+
+  // CRC (payload only)
+  uint16_t crc = crc16(&pkt[3], idx - 3);
 
   pkt[idx++] = crc & 0xFF;
   pkt[idx++] = (crc >> 8) & 0xFF;
@@ -54,15 +68,14 @@ static void sendAck(uint8_t seq, uint8_t status) {
 }
 
 // ==================================================
-// RECEIVE COMMAND (NON-BLOCKING + ACK + SAFE)
+// 🔴 RECEIVE COMMAND (NON-BLOCKING + CRC + DUPLICATE SAFE)
 // ==================================================
-void btReceiveCommand() {
+void btReceiveCommand(void) {
 
   static uint8_t state = 0;
   static uint8_t len = 0;
   static uint8_t idx = 0;
   static uint8_t buffer[32];
-  static uint8_t crcLow = 0;
 
   while (BT.available()) {
 
@@ -70,62 +83,57 @@ void btReceiveCommand() {
 
     switch (state) {
 
-      // =========================
-      // WAIT HEADER
-      // =========================
+      // -----------------------------
+      // HEADER 1
+      // -----------------------------
       case 0:
-        if (b == 0xAA) {
-          state = 1;
-        }
+        if (b == 0xAA) state = 1;
         break;
 
-      // =========================
-      // READ LEN
-      // =========================
+      // -----------------------------
+      // HEADER 2
+      // -----------------------------
       case 1:
-        if (b < 2 || b > 20) {
-          state = 0;  // invalid
+        if (b == 0x55) state = 2;
+        else state = 0;
+        break;
+
+      // -----------------------------
+      // LEN
+      // -----------------------------
+      case 2:
+        if (b < 2 || b > 28) {
+          state = 0;
         } else {
           len = b;
           idx = 0;
-          state = 2;
-        }
-        break;
-
-      // =========================
-      // READ PAYLOAD
-      // =========================
-      case 2:
-        buffer[idx++] = b;
-
-        if (idx >= len) {
           state = 3;
         }
         break;
 
-      // =========================
-      // CRC LOW
-      // =========================
+      // -----------------------------
+      // PAYLOAD + CRC
+      // -----------------------------
       case 3:
-        crcLow = b;
-        state = 4;
+        buffer[idx++] = b;
+
+        if (idx >= len + 2) {
+          state = 4;
+        }
         break;
 
-      // =========================
-      // CRC HIGH + PROCESS
-      // =========================
+      // -----------------------------
+      // PROCESS PACKET
+      // -----------------------------
       case 4: {
 
-        uint16_t crcRx = (b << 8) | crcLow;
+        uint16_t crcCalc = crc16(buffer, len);
 
-        uint8_t temp[40];
-        temp[0] = 0xAA;
-        temp[1] = len;
-        memcpy(&temp[2], buffer, len);
+        uint16_t crcRecv =
+          buffer[len] |
+          (buffer[len + 1] << 8);
 
-        uint16_t crcCalc = crc16(temp, len + 2);
-
-        if (crcCalc == crcRx) {
+        if (crcCalc == crcRecv) {
 
           uint8_t i = 0;
           uint8_t seq = buffer[i++];
@@ -140,50 +148,46 @@ void btReceiveCommand() {
 
             switch (cmd) {
 
-              // ======================================
+              // ==============================
               // 🔴 EMERGENCY STOP (CRITICAL)
-              // ======================================
+              // ==============================
               case 0x10:
                 killRequest = KillType::HARD;
                 killLatched = true;
                 killISRFlag = true;
-
                 sendAck(seq, 0x00);
                 break;
 
-              // ======================================
-              // START
-              // ======================================
+              // ==============================
+              // START SYSTEM
+              // ==============================
               case 0x11:
                 systemState = SystemState::ACTIVE;
-
                 sendAck(seq, 0x00);
                 break;
 
-              // ======================================
+              // ==============================
               // RESET FAULT
-              // ======================================
+              // ==============================
               case 0x12:
-                clearFault();   // ต้อง include FaultManager.h
-
+                clearFault();
                 sendAck(seq, 0x00);
                 break;
 
-              // ======================================
-              // UNKNOWN
-              // ======================================
+              // ==============================
+              // UNKNOWN CMD
+              // ==============================
               default:
                 sendAck(seq, 0x01);
                 break;
             }
 
           } else {
-            // 🔴 duplicate → ACK ซ้ำให้ Android หยุด retry
+            // 🔴 duplicate → ACK ซ้ำ
             sendAck(seq, 0x00);
           }
         }
 
-        // reset state machine
         state = 0;
         break;
       }
@@ -195,12 +199,18 @@ void btReceiveCommand() {
   }
 }
 
-void btSafetyCheck() {
+// ==================================================
+// 🔴 SAFETY CHECK (FIX LINK ERROR ตรงนี้แหละ)
+// ==================================================
+void btSafetyCheck(void) {
 
-  if (killLatched) return;  // 🔴 กันยิงซ้ำ
+  // 🔴 ถ้าล็อกแล้ว ไม่ต้องทำอะไร
+  if (killLatched) return;
 
+  // 🔴 ยังไม่เคยรับคำสั่ง
   if (lastCmdTime == 0) return;
 
+  // 🔴 timeout → HARD KILL
   if (millis() - lastCmdTime > CMD_TIMEOUT) {
 
     killRequest = KillType::HARD;

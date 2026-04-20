@@ -1,5 +1,5 @@
 // ============================================================================
-// BluetoothTelemetry.cpp (SAFE + SYNC ANDROID 100%)
+// BluetoothTelemetry.cpp (FINAL - CLEAN + MATCH ANDROID 100%)
 // ============================================================================
 
 #include "BluetoothTelemetry.h"
@@ -26,12 +26,13 @@ static uint16_t crc16(uint8_t *data, uint8_t len) {
   uint16_t crc = 0xFFFF;
 
   for (uint8_t i = 0; i < len; i++) {
-
     crc ^= data[i];
 
     for (uint8_t j = 0; j < 8; j++) {
-      if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
-      else crc >>= 1;
+      if (crc & 0x0001)
+        crc = (crc >> 1) ^ 0xA001;
+      else
+        crc >>= 1;
     }
   }
 
@@ -67,29 +68,33 @@ void btTelemetryUpdate(uint32_t now) {
   lastSend = now;
 
   // ==================================================
-  // 🔴 SANITY CHECK SENSOR (กันค่าพังทั้ง packet)
+  // 🔴 SANITY CHECK SENSOR (ห้ามหยุดส่ง packet)
   // ==================================================
-  if (isnan(engineVolt)) return;
+  float voltLocal = engineVolt;
 
-  uint8_t packet[32];
+  if (isnan(voltLocal) || isinf(voltLocal)) {
+    voltLocal = 0.0f;   // 🔴 ยังส่ง packetต่อ
+  }
+
+  // 🔴 เผื่อ buffer
+  uint8_t packet[40];
   uint8_t idx = 0;
 
   // ==================================================
   // HEADER
   // ==================================================
   packet[idx++] = 0xAA;
+  packet[idx++] = 0x55;
 
-  // reserve LEN
   uint8_t lenIndex = idx++;
 
   // ==================================================
-  // TYPE + SEQ
+  // 🔴 SEQ (ไม่มี TYPE แล้ว)
   // ==================================================
-  packet[idx++] = 0x01;     // TYPE = TELEMETRY
-  packet[idx++] = seq++;    // SEQ
+  packet[idx++] = seq++;
 
   // ==================================================
-  // 🔴 FLAGS (bit mask)
+  // FLAGS
   // ==================================================
   uint8_t flags = 0;
 
@@ -105,14 +110,14 @@ void btTelemetryUpdate(uint32_t now) {
   packet[idx++] = flags;
 
   // ==================================================
-  // 🔴 ERROR CODE
+  // ERROR
   // ==================================================
   packet[idx++] = (uint8_t)getActiveFault();
 
   // ==================================================
-  // 🔴 VOLTAGE (x100 + clamp)
+  // VOLTAGE (x100)
   // ==================================================
-  float voltSafe = safeFloat(engineVolt, 0.0f, 60.0f);
+  float voltSafe = safeFloat(voltLocal, 0.0f, 60.0f);
   int16_t v = (int16_t)(voltSafe * 100.0f);
   v = constrain(v, -32768, 32767);
 
@@ -120,7 +125,7 @@ void btTelemetryUpdate(uint32_t now) {
   packet[idx++] = lowByte(v);
 
   // ==================================================
-  // 🔴 CURRENT M1–M4 (x100 + clamp)
+  // CURRENT M1–M4 (x100)
   // ==================================================
   for (int i = 0; i < 4; i++) {
 
@@ -134,7 +139,7 @@ void btTelemetryUpdate(uint32_t now) {
   }
 
   // ==================================================
-  // 🔴 TEMP LEFT (clamp)
+  // TEMP LEFT
   // ==================================================
   float tLSafe = safeFloat(tempDriverL, -40.0f, 150.0f);
   int16_t tL = (int16_t)tLSafe;
@@ -143,7 +148,7 @@ void btTelemetryUpdate(uint32_t now) {
   packet[idx++] = lowByte(tL);
 
   // ==================================================
-  // 🔴 TEMP RIGHT (clamp)
+  // TEMP RIGHT
   // ==================================================
   float tRSafe = safeFloat(tempDriverR, -40.0f, 150.0f);
   int16_t tR = (int16_t)tRSafe;
@@ -152,16 +157,15 @@ void btTelemetryUpdate(uint32_t now) {
   packet[idx++] = lowByte(tR);
 
   // ==================================================
-  // LEN
+  // LEN (SEQ → DATA)
   // ==================================================
-  packet[lenIndex] = idx - 2;
+  packet[lenIndex] = idx - 3;
 
   // ==================================================
-  // CRC16
+  // CRC (payload only)
   // ==================================================
-  uint16_t crc = crc16(packet, idx);
+  uint16_t crc = crc16(&packet[3], idx - 3);
 
-  // LOW → HIGH (ตรง Android)
   packet[idx++] = crc & 0xFF;
   packet[idx++] = (crc >> 8) & 0xFF;
 
