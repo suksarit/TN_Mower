@@ -12,6 +12,7 @@
 #include "HardwareConfig.h"
 #include "FaultManager.h"
 #include "SystemTypes.h"
+#include "SystemDegradation.h"
 
 #ifndef BUDGET_SENSORS_MS
 #define BUDGET_SENSORS_MS 5
@@ -330,9 +331,16 @@ bool updateSensors() {
     sensorDegraded = true;
   }
 
-  if (now - lastGoodRead_ms > 800) {
+  // 🔴 map degraded  system mode
+if (sensorDegraded)
+{
+    setSystemMode(SystemMode::DEGRADED_L1);
+}
+
+ if (now - lastGoodRead_ms > 800) {
+    setSystemMode(SystemMode::DEGRADED_L2);
     requestFault(FaultCode::SENSOR_TIMEOUT);
-  }
+}
 
   return ok;
 }

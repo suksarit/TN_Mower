@@ -220,6 +220,6 @@ void updateThermalManager(uint32_t now)
 
 float getThermalScale(void) { return thermalScale; }
 bool isThermalEmergency(void) { return thermalEmergency; }
-float getPowerScale(void) { return powerScale; }
+float getThermalPowerScale(void) { return powerScale; }
 uint8_t getThermalFanLevel(void) { return fanLevel; }
 

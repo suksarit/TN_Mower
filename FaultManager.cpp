@@ -7,6 +7,7 @@
 #include "FaultManager.h"
 #include "GlobalState.h"
 #include "SafetyManager.h"
+#include "SystemDegradation.h"
 
 extern KillType killRequest;
 
@@ -87,7 +88,28 @@ void requestFault(FaultCode code)
   pushFaultLog(code, now);
 
   // 🔴 action
-  killRequest = KillType::HARD;
+  switch (code)
+{
+  case FaultCode::SENSOR_TIMEOUT:
+    setSystemMode(SystemMode::DEGRADED_L2);
+    killRequest = KillType::SOFT;
+    break;
+
+  case FaultCode::LOW_VOLTAGE_CRITICAL:
+    setSystemMode(SystemMode::DEGRADED_L2);
+    killRequest = KillType::SOFT;
+    break;
+
+  case FaultCode::OVER_CURRENT:
+    setSystemMode(SystemMode::FAULT);
+    killRequest = KillType::HARD;
+    break;
+
+  default:
+    setSystemMode(SystemMode::FAULT);
+    killRequest = KillType::HARD;
+}
+
   forceSafetyState(SafetyState::EMERGENCY);
 
 #if DEBUG_SERIAL

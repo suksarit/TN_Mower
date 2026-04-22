@@ -13,7 +13,7 @@ void updateThermalManager(uint32_t now);
 // ======================================================
 // POWER CONTROL (ใช้ใน DriveController)
 // ======================================================
-float getPowerScale(void);        // scale หลัก (thermal + current + voltage)
+float getThermalPowerScale(void);       // scale หลัก (thermal + current + voltage)
 bool  isThermalEmergency(void);   // emergency cut
 
 // ======================================================

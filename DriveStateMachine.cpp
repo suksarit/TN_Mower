@@ -11,10 +11,10 @@
 #include "GlobalState.h"
 #include "SystemTypes.h"
 #include "HardwareConfig.h"
-
 #include "SafetyManager.h"
 #include "FaultManager.h"
 #include "MotorDriver.h"
+#include "SystemDegradation.h"
 
 // 🔴 ใช้ killRequest จากระบบหลัก
 extern KillType killRequest;
@@ -115,19 +115,20 @@ void runDrive(uint32_t now)
 
     // --------------------------------------------------
     case DriveState::RUN:
+{
+    float scale = getPowerScale();
+
+    targetL *= scale;
+    targetR *= scale;
+
+    if (scale < 0.5f)
     {
-      if (safety == SafetyState::EMERGENCY)
-      {
-        driveState = DriveState::SOFT_STOP;
-      }
-      else if (safety == SafetyState::LIMP)
-      {
         driveState = DriveState::LIMP;
         limpSafeStart_ms = 0;
-      }
-
-      break;
     }
+
+    break;
+}
 
     // --------------------------------------------------
     case DriveState::LIMP:

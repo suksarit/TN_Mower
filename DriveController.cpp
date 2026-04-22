@@ -19,6 +19,7 @@
 #include "DriveRamp.h"
 #include "SensorManager.h"
 #include "TractionControl.h"
+#include "SystemDegradation.h"
 
 // ============================================================================
 // MAIN DRIVE PIPELINE

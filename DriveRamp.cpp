@@ -10,6 +10,7 @@
 #include "HardwareConfig.h"
 #include "SystemTypes.h"
 #include "DriveRamp.h"
+#include "SystemDegradation.h"
 
 // ======================================================
 // CONFIG
@@ -37,7 +38,7 @@ void updateDriveRamp(float &finalTargetL,
   finalTargetL = constrain(finalTargetL, -PWM_TOP, PWM_TOP);
   finalTargetR = constrain(finalTargetR, -PWM_TOP, PWM_TOP);
 
-  float dt = controlDt_s;
+ float dt = controlDt_s * getRampScale();
   if (dt <= 0.0001f) return;
 
   uint32_t now = millis();

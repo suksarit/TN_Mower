@@ -9,6 +9,7 @@
 #include "GlobalState.h"
 #include "HardwareConfig.h"
 #include "MotorDriver.h"
+#include "SystemDegradation.h"
 
 // H-BRIDGE
 #define HBRIDGE_L_OFF() (PORTA &= ~0b00000011)
@@ -42,8 +43,10 @@ void outputMotorPWM()
   int8_t dirL = (curL > 0) ? 1 : (curL < 0 ? -1 : 0);
   int8_t dirR = (curR > 0) ? 1 : (curR < 0 ? -1 : 0);
 
-  uint16_t pwmL = abs(curL);
-  uint16_t pwmR = abs(curR);
+  float scale = getPowerScale();
+
+uint16_t pwmL = abs(curL) * scale;
+uint16_t pwmR = abs(curR) * scale;
 
   // ================= LEFT =================
   switch (stateL)
