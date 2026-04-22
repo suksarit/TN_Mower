@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveController.cpp
+// DriveController.cpp (REFACTORED - LOW COUPLING VERSION)
 // ============================================================================
 
 #include <Arduino.h>
@@ -9,32 +9,53 @@
 #include "GlobalState.h"
 #include "SystemTypes.h"
 #include "HardwareConfig.h"
+
 #include "DriveController.h"
 #include "MotorDriver.h"
 #include "SafetyManager.h"
-#include "ThermalManager.h"
 #include "AutoReverse.h"
 #include "DriveProtection.h"
 #include "CurrentController.h"
 #include "DriveRamp.h"
 #include "SensorManager.h"
 #include "TractionControl.h"
+#include "PowerManager.h"         
 #include "SystemDegradation.h"
 
+// ======================================================
+// 🔴 OWNER TARGET (แทน targetL/targetR เดิม)
+// ======================================================
+static float driveTargetL = 0.0f;
+static float driveTargetR = 0.0f;
+
+// ======================================================
+void setDriveTarget(float l, float r)
+{
+  driveTargetL = l;
+  driveTargetR = r;
+}
+
+// ======================================================
+void getDriveTarget(float &l, float &r)
+{
+  l = driveTargetL;
+  r = driveTargetR;
+}
+
 // ============================================================================
-// MAIN DRIVE PIPELINE
+// MAIN DRIVE PIPELINE (REWRITE)
 // ============================================================================
-void applyDrive(uint32_t now) {
+void applyDrive(uint32_t now)
+{
   lastDriveEvent = DriveEvent::NONE;
 
   // ==================================================
   // SYSTEM GUARD
   // ==================================================
-  if (driverState == DriverState::SETTLING) {
+  if (driverState == DriverState::SETTLING)
+  {
     curL = 0;
     curR = 0;
-    targetL = 0;
-    targetR = 0;
 
     resetCurrentLoop();
     resetDriveRamp();
@@ -42,18 +63,19 @@ void applyDrive(uint32_t now) {
   }
 
   // ==================================================
-  // HARD FAULT
+  // FAULT
   // ==================================================
-  if (systemState == SystemState::FAULT) {
+  if (systemState == SystemState::FAULT)
+  {
     forceDriveSoftStop(now);
     return;
   }
 
   // ==================================================
-  // BASE TARGET
+  // 🔴 READ TARGET FROM OWNER
   // ==================================================
-  float finalTargetL = targetL;
-  float finalTargetR = targetR;
+  float finalTargetL, finalTargetR;
+  getDriveTarget(finalTargetL, finalTargetR);
 
   // ==================================================
   // AUTO REVERSE
@@ -61,7 +83,7 @@ void applyDrive(uint32_t now) {
   applyAutoReverse(finalTargetL, finalTargetR, now);
 
   // ==================================================
-  // CURRENT READ
+  // SENSOR
   // ==================================================
   float curA_L = getMotorCurrentSafeL();
   float curA_R = getMotorCurrentSafeR();
@@ -76,7 +98,8 @@ void applyDrive(uint32_t now) {
     finalTargetL,
     finalTargetR,
     curA_L,
-    curA_R);
+    curA_R
+  );
 
   // ==================================================
   // STALL SCALE
@@ -87,7 +110,7 @@ void applyDrive(uint32_t now) {
   finalTargetR *= stallScale;
 
   // ==================================================
-  // 🔴 FIX 1: DEADZONE ถูกต้อง
+  // DEADZONE
   // ==================================================
   constexpr float DEADZONE = 0.05f;
 
@@ -95,9 +118,9 @@ void applyDrive(uint32_t now) {
   if (fabs(finalTargetR) < DEADZONE) finalTargetR = 0;
 
   // ==================================================
-  // POWER LIMIT
+  // 🔴 CENTRAL POWER SCALE (สำคัญที่สุด)
   // ==================================================
-  float powerScale = getPowerScale();
+  float powerScale = getFinalPowerScale();
 
   finalTargetL *= powerScale;
   finalTargetR *= powerScale;
@@ -107,10 +130,13 @@ void applyDrive(uint32_t now) {
   // ==================================================
   SafetyState s = getDriveSafety();
 
-  if (s == SafetyState::LIMP) {
+  if (s == SafetyState::LIMP)
+  {
     finalTargetL *= 0.4f;
     finalTargetR *= 0.4f;
-  } else if (s == SafetyState::WARN) {
+  }
+  else if (s == SafetyState::WARN)
+  {
     finalTargetL *= 0.7f;
     finalTargetR *= 0.7f;
   }
@@ -121,15 +147,16 @@ void applyDrive(uint32_t now) {
   applyDriveLimits(finalTargetL, finalTargetR, curA_L, curA_R);
 
   // ==================================================
-  // 🔴 FIX 2: CLAMP TARGET
+  // CLAMP
   // ==================================================
   finalTargetL = constrain(finalTargetL, -1.0f, 1.0f);
   finalTargetR = constrain(finalTargetR, -1.0f, 1.0f);
 
   // ==================================================
-  // 🔴 FIX 3: LOAD COMP ใช้งานได้จริง
+  // LOAD COMP
   // ==================================================
-  if (fabs(finalTargetL) > 0.2f || fabs(finalTargetR) > 0.2f) {
+  if (fabs(finalTargetL) > 0.2f || fabs(finalTargetR) > 0.2f)
+  {
     static float filtL = 0;
     static float filtR = 0;
 
@@ -164,7 +191,8 @@ void applyDrive(uint32_t now) {
     targetCurrentL,
     targetCurrentR,
     curA_L,
-    curA_R);
+    curA_R
+  );
 
   // ==================================================
   // CURRENT PID
@@ -172,7 +200,7 @@ void applyDrive(uint32_t now) {
   applyCurrentPID(targetCurrentL, targetCurrentR);
 
   // ==================================================
-  // 🔴 FIX 4: CURRENT LIMIT (ไม่กระชาก)
+  // CURRENT LIMIT
   // ==================================================
   const float CUR_LIMIT = 30.0f;
   const float CUR_HARD = 50.0f;
@@ -192,7 +220,8 @@ void applyDrive(uint32_t now) {
   // ==================================================
   // EMERGENCY
   // ==================================================
-  if (s == SafetyState::EMERGENCY) {
+  if (s == SafetyState::EMERGENCY)
+  {
     forceDriveSoftStop(now);
     return;
   }
@@ -200,15 +229,18 @@ void applyDrive(uint32_t now) {
   // ==================================================
   // FINAL SAFETY
   // ==================================================
-  if (systemState != SystemState::ACTIVE || driverState != DriverState::ACTIVE) {
+  if (systemState != SystemState::ACTIVE ||
+      driverState != DriverState::ACTIVE)
+  {
     forceDriveSoftStop(now);
     return;
   }
 
   // ==================================================
-  // 🔴 FIX 5: HARD KILL ปลอดภัย
+  // KILL
   // ==================================================
-  if (killRequest == KillType::HARD) {
+  if (killRequest == KillType::HARD)
+  {
     curL = 0;
     curR = 0;
     outputMotorPWM();
@@ -227,10 +259,12 @@ void applyDrive(uint32_t now) {
 }
 
 // ============================================================================
-// FORCE SOFT STOP
+// SOFT STOP
 // ============================================================================
-void forceDriveSoftStop(uint32_t now) {
-  if (driveState != DriveState::SOFT_STOP) {
+void forceDriveSoftStop(uint32_t now)
+{
+  if (driveState != DriveState::SOFT_STOP)
+  {
     driveState = DriveState::SOFT_STOP;
     driveSoftStopStart_ms = now;
 
@@ -250,11 +284,15 @@ void forceDriveSoftStop(uint32_t now) {
 }
 
 // ============================================================================
-// CHECK COMMAND ZERO (FIXED SCALE)
+// COMMAND ZERO
 // ============================================================================
-bool driveCommandZero() {
+bool driveCommandZero()
+{
   constexpr float ZERO_TH = 0.05f;
-  return (fabs(targetL) < ZERO_TH && fabs(targetR) < ZERO_TH);
-}
 
+  float l, r;
+  getDriveTarget(l, r);
+
+  return (fabs(l) < ZERO_TH && fabs(r) < ZERO_TH);
+}
 

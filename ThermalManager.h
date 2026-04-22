@@ -1,9 +1,7 @@
-// ============================================================================
-// ThermalManager.h 
-// ============================================================================
+// ThermalManager.h
 
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
 
 // ======================================================
 // MAIN UPDATE (ต้องเรียกทุก loop)
@@ -11,19 +9,17 @@
 void updateThermalManager(uint32_t now);
 
 // ======================================================
-// POWER CONTROL (ใช้ใน DriveController)
+// 🔴 POWER SCALE (ใช้โดย PowerManager เท่านั้น)
 // ======================================================
-float getThermalPowerScale(void);       // scale หลัก (thermal + current + voltage)
-bool  isThermalEmergency(void);   // emergency cut
+float getThermalPowerScale(void);
 
 // ======================================================
-// OPTIONAL (debug / legacy)
+// 🔴 STATUS
 // ======================================================
-float getThermalScale(void);      // เผื่อ debug
+bool isThermalEmergency(void);
 
 // ======================================================
-// FAN CONTROL (ใช้ใน FanManager)
+// 🔴 FAN CONTROL (ใช้โดย FanManager / Output)
 // ======================================================
-uint8_t getThermalFanLevel(void); // 0–255
-
+uint8_t getThermalFanLevel(void);
 

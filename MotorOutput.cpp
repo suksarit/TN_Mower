@@ -1,5 +1,5 @@
 // ============================================================================
-// MotorOutput.cpp (FIXED - DEADTIME SAFE + NO SPIKE)
+// MotorOutput.cpp (REFACTORED - PURE OUTPUT LAYER)
 // ============================================================================
 
 #include <Arduino.h>
@@ -9,9 +9,10 @@
 #include "GlobalState.h"
 #include "HardwareConfig.h"
 #include "MotorDriver.h"
-#include "SystemDegradation.h"
 
-// H-BRIDGE
+// ======================================================
+// H-BRIDGE CONTROL
+// ======================================================
 #define HBRIDGE_L_OFF() (PORTA &= ~0b00000011)
 #define HBRIDGE_L_FWD() (PORTA = (PORTA & ~0b00000011) | 0b00000001)
 #define HBRIDGE_L_REV() (PORTA = (PORTA & ~0b00000011) | 0b00000010)
@@ -37,16 +38,17 @@ void outputMotorPWM()
 
   uint32_t now = micros();
 
+  // --------------------------------------------------
+  // INPUT FROM CONTROL LAYER (ห้ามแก้ logic ที่นี่)
+  // --------------------------------------------------
   curL = constrain(curL, -PWM_TOP, PWM_TOP);
   curR = constrain(curR, -PWM_TOP, PWM_TOP);
 
   int8_t dirL = (curL > 0) ? 1 : (curL < 0 ? -1 : 0);
   int8_t dirR = (curR > 0) ? 1 : (curR < 0 ? -1 : 0);
 
-  float scale = getPowerScale();
-
-uint16_t pwmL = abs(curL) * scale;
-uint16_t pwmR = abs(curR) * scale;
+  uint16_t pwmL = abs(curL);
+  uint16_t pwmR = abs(curR);
 
   // ================= LEFT =================
   switch (stateL)

@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveRamp.cpp (TORQUE SYSTEM SAFE  
+// DriveRamp.cpp (REFACTORED - PURE RAMP ONLY)
 // ============================================================================
 
 #include <Arduino.h>
@@ -10,7 +10,6 @@
 #include "HardwareConfig.h"
 #include "SystemTypes.h"
 #include "DriveRamp.h"
-#include "SystemDegradation.h"
 
 // ======================================================
 // CONFIG
@@ -28,45 +27,50 @@ constexpr float SNAP_ZERO = 6.0f;
 
 static uint32_t stuckStart_ms = 0;
 
+// 🔴 state ต้องอยู่นอก function (สำคัญมาก)
+static float rampL = 0;
+static float rampR = 0;
+
 // ============================================================================
 // MAIN RAMP FUNCTION
 // ============================================================================
-
 void updateDriveRamp(float &finalTargetL,
                     float &finalTargetR)
 {
+  // --------------------------------------------------
+  // clamp input
+  // --------------------------------------------------
   finalTargetL = constrain(finalTargetL, -PWM_TOP, PWM_TOP);
   finalTargetR = constrain(finalTargetR, -PWM_TOP, PWM_TOP);
 
- float dt = controlDt_s * getRampScale();
+  // --------------------------------------------------
+  // dt (❗ ไม่ใช้ getRampScale อีกต่อไป)
+  // --------------------------------------------------
+  float dt = controlDt_s;
   if (dt <= 0.0001f) return;
 
   uint32_t now = millis();
 
-  // ==================================================
-  // STATE
-  // ==================================================
-  static float rampL = 0;
-  static float rampR = 0;
-
+  // --------------------------------------------------
+  // error
+  // --------------------------------------------------
   float errL = finalTargetL - rampL;
   float errR = finalTargetR - rampR;
 
-  // ==================================================
-  // 🔴 S-CURVE FACTOR (สำคัญ)
-  // ==================================================
+  // --------------------------------------------------
+  // S-CURVE (smooth acceleration)
+  // --------------------------------------------------
   auto sCurve = [](float error, float maxVal) -> float {
     float x = fabs(error) / maxVal;
     if (x > 1.0f) x = 1.0f;
 
-    // cubic ease out
     float y = 1.0f - (1.0f - x)*(1.0f - x)*(1.0f - x);
     return y;
   };
 
-  // ==================================================
-  // SELECT BASE RATE
-  // ==================================================
+  // --------------------------------------------------
+  // SELECT RATE
+  // --------------------------------------------------
   float baseRateL =
     (abs(finalTargetL) < SNAP_ZERO) ? STOP_RATE :
     (abs(finalTargetL) > abs(rampL)) ? ACCEL_RATE :
@@ -77,9 +81,9 @@ void updateDriveRamp(float &finalTargetL,
     (abs(finalTargetR) > abs(rampR)) ? ACCEL_RATE :
                                       DECEL_RATE;
 
-  // ==================================================
+  // --------------------------------------------------
   // APPLY S-CURVE
-  // ==================================================
+  // --------------------------------------------------
   float factorL = sCurve(errL, PWM_TOP);
   float factorR = sCurve(errR, PWM_TOP);
 
@@ -95,18 +99,18 @@ void updateDriveRamp(float &finalTargetL,
   rampL += errL;
   rampR += errR;
 
-  // ==================================================
+  // --------------------------------------------------
   // SNAP TO ZERO
-  // ==================================================
+  // --------------------------------------------------
   if (abs(rampL) < SNAP_ZERO && abs(finalTargetL) < SNAP_ZERO)
     rampL = 0;
 
   if (abs(rampR) < SNAP_ZERO && abs(finalTargetR) < SNAP_ZERO)
     rampR = 0;
 
-  // ==================================================
+  // --------------------------------------------------
   // SAFE REVERSE
-  // ==================================================
+  // --------------------------------------------------
   constexpr int16_t REVERSE_SAFE_PWM = 120;
 
   bool reverseL =
@@ -139,9 +143,9 @@ void updateDriveRamp(float &finalTargetL,
     }
   }
 
-  // ==================================================
+  // --------------------------------------------------
   // OUTPUT
-  // ==================================================
+  // --------------------------------------------------
   finalTargetL = rampL;
   finalTargetR = rampR;
 }
@@ -149,13 +153,8 @@ void updateDriveRamp(float &finalTargetL,
 // ============================================================================
 // RESET DRIVE RAMP
 // ============================================================================
-
 void resetDriveRamp()
 {
-  // reset internal ramp state
-  static float rampL = 0;
-  static float rampR = 0;
-
   rampL = 0;
   rampR = 0;
 

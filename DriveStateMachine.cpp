@@ -1,5 +1,5 @@
 // ============================================================================
-// DriveStateMachine.cpp (FINAL - KILL SAFE + INDUSTRIAL)
+// DriveStateMachine.cpp (REFACTORED - NO POWER COUPLING)
 // ============================================================================
 
 #include "CurrentController.h"
@@ -28,7 +28,7 @@ void runDrive(uint32_t now)
   static uint32_t limpSafeStart_ms = 0;
 
   // ==================================================
-  // 🔴 PRIORITY: KILL (สูงสุด)
+  // 🔴 PRIORITY: KILL
   // ==================================================
   if (killRequest == KillType::HARD)
   {
@@ -72,9 +72,6 @@ void runDrive(uint32_t now)
 
     if (now - runawayStart_ms > RUNAWAY_CONFIRM_MS)
     {
-#if DEBUG_SERIAL
-      Serial.println(F("[DRIVE] RUNAWAY DETECTED"));
-#endif
       requestFault(FaultCode::DRIVE_TIMEOUT);
     }
   }
@@ -87,6 +84,11 @@ void runDrive(uint32_t now)
   // SAFETY
   // ==================================================
   SafetyState safety = getDriveSafety();
+
+  // ==================================================
+  // SYSTEM MODE (ใช้แทน powerScale)
+  // ==================================================
+  SystemMode mode = getSystemMode();
 
   // ==================================================
   // STATE MACHINE
@@ -115,28 +117,26 @@ void runDrive(uint32_t now)
 
     // --------------------------------------------------
     case DriveState::RUN:
-{
-    float scale = getPowerScale();
-
-    targetL *= scale;
-    targetR *= scale;
-
-    if (scale < 0.5f)
     {
+      // 🔴 ใช้ SystemMode แทน scale
+      if (mode == SystemMode::DEGRADED_L2 ||
+          mode == SystemMode::FAULT)
+      {
         driveState = DriveState::LIMP;
         limpSafeStart_ms = 0;
-    }
+      }
 
-    break;
-}
+      break;
+    }
 
     // --------------------------------------------------
     case DriveState::LIMP:
     {
-      const float limpScale = 0.5f;
+      // 🔴 จำกัด target (แต่ไม่คูณ scale ซ้ำ)
+      const float limpLimit = 0.5f;
 
-      targetL = constrain(targetL, -1.0f, 1.0f) * limpScale;
-      targetR = constrain(targetR, -1.0f, 1.0f) * limpScale;
+      targetL = constrain(targetL, -limpLimit, limpLimit);
+      targetR = constrain(targetR, -limpLimit, limpLimit);
 
       if (safety == SafetyState::EMERGENCY)
       {
@@ -144,16 +144,14 @@ void runDrive(uint32_t now)
         break;
       }
 
-      if (safety == SafetyState::SAFE)
+      if (mode == SystemMode::NORMAL &&
+          safety == SafetyState::SAFE)
       {
         if (limpSafeStart_ms == 0)
           limpSafeStart_ms = now;
 
         else if (now - limpSafeStart_ms >= LIMP_RECOVER_MS)
         {
-#if DEBUG_SERIAL
-          Serial.println(F("[DRIVE] LIMP RECOVER -> RUN"));
-#endif
           driveState = DriveState::RUN;
           limpSafeStart_ms = 0;
         }
@@ -178,7 +176,6 @@ void runDrive(uint32_t now)
         resetCurrentLoop();
       }
 
-      // 🔴 รอ ramp ลงจริง
       if ((abs(curL) < 3 && abs(curR) < 3) ||
           (now - driveSoftStopStart_ms >= DRIVE_SOFT_STOP_TIMEOUT_MS))
       {
@@ -197,14 +194,11 @@ void runDrive(uint32_t now)
 
       driveSafe();
 
-      // 🔴 ปลด lock เฉพาะกรณีปลอดภัยจริง
       if (killRequest == KillType::NONE &&
           systemState == SystemState::ACTIVE &&
-          safety == SafetyState::SAFE)
+          safety == SafetyState::SAFE &&
+          mode != SystemMode::FAULT)
       {
-#if DEBUG_SERIAL
-        Serial.println(F("[DRIVE] UNLOCK -> IDLE"));
-#endif
         driveState = DriveState::IDLE;
       }
 
