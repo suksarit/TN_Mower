@@ -46,153 +46,237 @@
 // FUNCTION PROTOTYPES
 // ======================================================
 
+// ตรวจว่า RC อยู่ในตำแหน่ง Neutral (ใช้เป็นเงื่อนไข Arm ระบบ)
 bool neutral(uint16_t v);
 
+// ควบคุมสถานะ ignition relay (เปิด/ปิดเครื่องยนต์)
 void updateIgnition();
+
+// State machine ของเครื่องยนต์ (Idle / Starting / Running / Fault)
 void updateEngineState(uint32_t now);
+
+// ควบคุม throttle (servo) ตาม command และ state เครื่องยนต์
 void updateEngineThrottle();
+
+// ควบคุม starter relay พร้อม timeout protection
 void updateStarter(uint32_t now);
+
+// ควบคุมใบมีด (blade) พร้อม logic ความปลอดภัย
 void runBlade(uint32_t now);
+
+// ส่งข้อมูล telemetry แบบ CSV (debug / log / วิเคราะห์)
 void telemetryCSV(uint32_t now, uint32_t loopStart_us);
+
+// ตรวจ watchdog ของ subsystem (Sensor / Comms / Drive / Blade)
 void monitorSubsystemWatchdogs(uint32_t now);
+
+// งาน background สำหรับจัดการ fault และ EEPROM (non-blocking)
 void backgroundFaultEEPROMTask(uint32_t now);
+
+// จัดการ reset fault (manual / Bluetooth)
 void processFaultReset(uint32_t now);
+
+// ตรวจว่าไม่มีคำสั่งขับเคลื่อน (ใช้เป็นเงื่อนไข safety)
 bool driveCommandZero();
+
+// เคลียร์ I2C bus กรณี bus hang (industrial recovery)
 void i2cBusClear();
 
-// FUNCTION PROTOTYPES (FINAL / MATCH ARDUINO ABI)
+// อ่านอุณหภูมิ driver ผ่าน PT100 (MAX31865)
 bool readDriverTempsPT100(int &tL, int &tR);
+
+// อัปเดต sensor ทั้งระบบ (current / voltage / temp)
 bool updateSensors(void);
+
+// เรียก fault → เข้าสู่ FAULT state และ latch
 void requestFault(FaultCode code);
 
-// DRIVE PIPELINE
+// ======================================================
+// DRIVE PIPELINE (Modular Control Flow)
+// ======================================================
+
+// ตรวจ safety ก่อนอนุญาตให้ระบบ drive ทำงาน
 bool driveSafetyGuard();
+
+// คำนวณ target ความเร็วซ้าย/ขวาจาก RC input
 void computeDriveTarget(float &finalTargetL, float &finalTargetR, uint32_t now);
+
+// จำกัดค่าตาม current protection / thermal / logic constraint
 void applyDriveLimits(float &finalTargetL, float &finalTargetR, float curA_L, float curA_R);
+
+// ทำ ramp (soft start / stop / smoothing) เพื่อลด jerk
 void updateDriveRamp(float finalTargetL, float finalTargetR);
+
+// ส่ง PWM + direction ไปยัง H-Bridge จริง
 void outputMotorPWM();
 
-// ----- MAX31865 (PT100) -----
+// ======================================================
+// PT100 TEMPERATURE SENSOR (MAX31865)
+// ======================================================
+// Chip Select สำหรับ driver ซ้าย/ขวา
 constexpr uint8_t MAX_CS_L = 49;
 constexpr uint8_t MAX_CS_R = 48;
 
-// PT100 constants
+// ค่ามาตรฐาน PT100 (ใช้คำนวณอุณหภูมิ)
 constexpr float RTD_RNOMINAL = 100.0f;
 constexpr float RTD_RREF = 430.0f;
 
-// FAST H-BRIDGE CONTROL (PORTA DIRECT)
+// ======================================================
+// FAST H-BRIDGE CONTROL (DIRECT PORT MANIPULATION)
+// ======================================================
+// ใช้ PORTA โดยตรง → latency ต่ำสุด (ระดับ register)
+
+// ปิดมอเตอร์ซ้าย
 #define HBRIDGE_L_OFF() (PORTA &= ~0b00000011)
+
+// เดินหน้ามอเตอร์ซ้าย
 #define HBRIDGE_L_FWD() \
   { PORTA = (PORTA & ~0b00000011) | 0b00000001; }
+
+// ถอยหลังมอเตอร์ซ้าย
 #define HBRIDGE_L_REV() \
   { PORTA = (PORTA & ~0b00000011) | 0b00000010; }
 
+// ปิดมอเตอร์ขวา
 #define HBRIDGE_R_OFF() (PORTA &= ~0b00001100)
+
+// เดินหน้ามอเตอร์ขวา
 #define HBRIDGE_R_FWD() \
   { PORTA = (PORTA & ~0b00001100) | 0b00000100; }
+
+// ถอยหลังมอเตอร์ขวา
 #define HBRIDGE_R_REV() \
   { PORTA = (PORTA & ~0b00001100) | 0b00001000; }
 
+// ปิดมอเตอร์ทั้งหมดทันที (ใช้ใน fault / emergency)
 #define HBRIDGE_ALL_OFF() (PORTA &= ~0b00001111)
 
-// ===== Time Budget (ms) =====
-#define BUDGET_SENSORS_MS 5
-#define BUDGET_COMMS_MS 3
-#define BUDGET_DRIVE_MS 2
-#define BUDGET_BLADE_MS 2
-#define BUDGET_LOOP_MS 20
+// ======================================================
+// TIME BUDGET (REAL-TIME CONSTRAINT)
+// ======================================================
+// ใช้ตรวจว่าแต่ละ phase ใช้เวลานานเกินหรือไม่
+#define BUDGET_SENSORS_MS 5   // sensor processing
+#define BUDGET_COMMS_MS   3   // RC + Bluetooth
+#define BUDGET_DRIVE_MS   2   // drive control
+#define BUDGET_BLADE_MS   2   // blade control
+#define BUDGET_LOOP_MS   20   // total loop (50Hz)
 
-// SENSOR / CALIBRATION
-constexpr uint32_t SENSOR_WARMUP_MS = 2000;
+// ======================================================
+// SENSOR CALIBRATION
+// ======================================================
 
-bool currentOffsetCalibrated = false;
+constexpr uint32_t SENSOR_WARMUP_MS = 2000;  // warmup ก่อนใช้งานจริง
 
-constexpr uint8_t ACS_CAL_SAMPLE_N = 32;
-constexpr uint16_t ACS_CAL_TIMEOUT_MS = 400;
+bool currentOffsetCalibrated = false;  // flag การ calibrate ACS758
 
-// ============================================================================
-// TIMER CONTROL LOOP (LEVEL 4)
-// ============================================================================
-volatile bool controlFlag = false;
-volatile uint8_t tick = 0;
-volatile uint8_t controlTicks = 0;
+constexpr uint8_t ACS_CAL_SAMPLE_N = 32;     // จำนวน sample
+constexpr uint16_t ACS_CAL_TIMEOUT_MS = 400; // timeout calibration
 
+// ======================================================
+// TIMER CONTROL LOOP (ISR DRIVEN - 50Hz)
+// ======================================================
+
+volatile bool controlFlag = false;  // reserved (ยังไม่ใช้จริง)
+volatile uint8_t tick = 0;          // base tick
+volatile uint8_t controlTicks = 0;  // จำนวนรอบ control ที่ต้อง execute
+
+// Timer2 ISR → generate control tick
 ISR(TIMER2_COMPA_vect) {
+
   tick++;
 
+  // ทุก 20 tick → 20ms → 50Hz
   if (tick >= 20) {
+
     tick = 0;
 
-    if (controlTicks < 255)  // กัน overflow
+    // ป้องกัน overflow
+    if (controlTicks < 255)
       controlTicks++;
   }
 }
 
-// ============================================================================
-// CONTROL LOOP CONFIG (DETERMINISTIC)
-// ============================================================================
-constexpr uint32_t CONTROL_PERIOD_US = 20000;  // 20ms = 50Hz
+// ======================================================
+// CONTROL LOOP CONFIG (DETERMINISTIC TIMING)
+// ======================================================
+
+constexpr uint32_t CONTROL_PERIOD_US = 20000;  // 20ms fixed loop
 static uint32_t lastControl_us = 0;
 
-// ============================================================================
-// WATCHDOG DOMAINS (DUAL-LAYER ARCH)
-// ============================================================================
+// ======================================================
+// WATCHDOG DOMAINS (MULTI-LAYER SAFETY)
+// ======================================================
+
 constexpr uint16_t WD_SENSOR_TIMEOUT_MS = 120;
-constexpr uint8_t TEMP_TIMEOUT_MULTIPLIER = 3;  // ≥2 เท่า WD
+
+// temp sensor ต้อง tolerant มากกว่า
+constexpr uint8_t TEMP_TIMEOUT_MULTIPLIER = 3;
+
 constexpr uint16_t TEMP_SENSOR_TIMEOUT_MS =
   WD_SENSOR_TIMEOUT_MS * TEMP_TIMEOUT_MULTIPLIER;
 
-// ============================================================================
-// INDUSTRIAL LOOP TIMING SUPERVISOR
-// ============================================================================
+
+// ======================================================
+// LOOP TIMING SUPERVISOR
+// ======================================================
+// ใช้ตรวจ overload แบบสะสม (industrial approach)
+
 static int32_t loopOverrunAccum_us = 0;
 
-// ============================================================================
-// PHASE BUDGET CONFIRM (GLOBAL)
-// ============================================================================
+// ======================================================
+// PHASE FAULT CONFIRMATION (ANTI-FALSE TRIGGER)
+// ======================================================
+
 uint8_t commsBudgetCnt = 0;
 uint8_t driveBudgetCnt = 0;
 uint8_t bladeBudgetCnt = 0;
 
+// ต้อง fail ต่อเนื่อง 3 ครั้ง
 constexpr uint8_t PHASE_BUDGET_CONFIRM = 3;
 
-constexpr int32_t LOOP_OVERRUN_FAULT_US = 40000;   // sustained overload
-constexpr int32_t LOOP_OVERRUN_RECOVER_US = 2000;  // decay per healthy loop
+constexpr int32_t LOOP_OVERRUN_FAULT_US = 40000;
+constexpr int32_t LOOP_OVERRUN_RECOVER_US = 2000;
+
+// hard kill ถ้าเกิน 2x budget
 constexpr uint32_t LOOP_HARD_LIMIT_US =
-  BUDGET_LOOP_MS * 2000UL;  // 2x budget immediate kill
+  BUDGET_LOOP_MS * 2000UL;
 
-// ============================================================================
-// PWM CONFIG
-// ============================================================================
-#define PWM_TOP 1067  // 15 kHz
+// ======================================================
+// PWM CONFIGURATION
+// ======================================================
 
-// ============================================================================
-// FAN CONTROL (DRIVER COOLING)
-// ============================================================================
+#define PWM_TOP 1067  // สำหรับ 15kHz (Timer config)
 
-// LEFT DRIVER
-constexpr int16_t FAN_L_START_C = 55;  // เริ่มหมุน
-constexpr int16_t FAN_L_FULL_C = 85;   // เต็มรอบ
+// ======================================================
+// FAN CONTROL (THERMAL MANAGEMENT)
+// ======================================================
 
-// RIGHT DRIVER
+// Threshold เปิด/ปิดพัดลม
+constexpr int16_t FAN_L_START_C = 55;
+constexpr int16_t FAN_L_FULL_C  = 85;
+
 constexpr int16_t FAN_R_START_C = 60;
-constexpr int16_t FAN_R_FULL_C = 88;
+constexpr int16_t FAN_R_FULL_C  = 88;
 
-// PWM behavior
-constexpr uint8_t FAN_MIN_PWM = 80;   // ต่ำกว่านี้พัดลมไม่หมุน
-constexpr uint8_t FAN_PWM_HYST = 8;   // hysteresis กันแกว่ง
-constexpr uint8_t FAN_IDLE_PWM = 50;  // ~20% idle spin
+// PWM constraints
+constexpr uint8_t FAN_MIN_PWM  = 80;  // ต่ำสุดที่หมุนได้
+constexpr uint8_t FAN_PWM_HYST = 8;   // hysteresis กัน oscillation
+constexpr uint8_t FAN_IDLE_PWM = 50;  // idle spin
 
-constexpr uint32_t VOLT_SENSOR_TIMEOUT_MS = 1500;  // เดิม 500 → 1.5 วินาที
-constexpr uint8_t VOLT_SENSOR_FAIL_COUNT = 3;      // ต้อง fail 3 รอบติดก่อน latch
 
-// ============================================================================
-// UTIL
-// ============================================================================
+// ======================================================
+// VOLTAGE SENSOR FAULT LOGIC
+// ======================================================
 
-// ============================================================================
-// BUFFER COPY (ATOMIC - ISR SAFE)
-// ============================================================================
+constexpr uint32_t VOLT_SENSOR_TIMEOUT_MS = 1500;
+constexpr uint8_t VOLT_SENSOR_FAIL_COUNT  = 3;
+
+
+// ======================================================
+// BUFFER COPY (ISR → MAIN SAFE TRANSFER)
+// ======================================================
+// ป้องกัน race condition ด้วย double-read verification
+
 inline void copyDriveBuffer() {
 
   float tL1, tR1, cL1, cR1;
@@ -219,27 +303,15 @@ inline void copyDriveBuffer() {
 
   } while (tL1 != tL2 || tR1 != tR2 || cL1 != cL2 || cR1 != cR2);
 
+  // commit data → main context
   driveBufMain.targetL = tL1;
   driveBufMain.targetR = tR1;
-  driveBufMain.curL = cL1;
-  driveBufMain.curR = cR1;
+  driveBufMain.curL    = cL1;
+  driveBufMain.curR    = cR1;
 }
 
 // ======================================================
-// FREE RAM (SRAM MONITOR)
-// AVR SRAM calculation
-//
-// วิธีคำนวณ
-// free RAM = stack_top - heap_top
-//
-// heap_top = __brkval
-// ถ้า heap ยังไม่ถูก allocate (__brkval == 0)
-// ให้ใช้ __heap_start แทน
-//
-// NOTE:
-// __heap_start และ __brkval เป็น symbol ภายในของ AVR libc
-// บาง toolchain อาจไม่ได้ประกาศใน header
-// จึงต้อง declare extern เอง
+// FREE RAM MONITOR (WATCHDOG SUPPORT)
 // ======================================================
 
 #if defined(__AVR__)
@@ -248,23 +320,24 @@ extern unsigned int __heap_start;
 extern void *__brkval;
 
 int freeRam() {
+
   int stackTop;
 
   void *heapTop = (__brkval == 0)
                     ? (void *)&__heap_start
                     : __brkval;
 
+  // stack - heap = available RAM
   return (int)&stackTop - (int)heapTop;
 }
 
 #else
 
 int freeRam() {
-  return -1;  // not supported on non-AVR platforms
+  return -1;  // unsupported platform
 }
 
 #endif
-
 
 void setupControlTimer() {
   cli();
