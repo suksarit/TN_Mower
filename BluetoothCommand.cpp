@@ -1,5 +1,7 @@
 // ============================================================================
-// BluetoothCommand.cpp (FINAL + FIX LINK ERROR + MATCH PROTOCOL)
+// BluetoothCommand.cpp
+// FINAL SAFE VERSION
+// ลด kill สุ่ม + ยังปลอดภัย + protocol เดิม
 // ============================================================================
 
 #include "BluetoothCommand.h"
@@ -8,25 +10,49 @@
 
 #define BT Serial2
 
-#define CMD_TIMEOUT 2000  // ms
+// ============================================================================
+// CONFIG
+// ============================================================================
 
-// ==================================================
-// 🔴 STATE (GLOBAL STATIC)
-// ==================================================
-static uint8_t lastCmdSeq = 0;
+// ไม่มี packet ใหม่เกินนี้ = soft stop
+#define CMD_WARN_TIMEOUT   2000UL
+
+// ไม่มี packet ใหม่เกินนี้ = hard kill
+#define CMD_KILL_TIMEOUT   4000UL
+
+// parser ค้างเกินนี้ reset state
+#define PARSER_TIMEOUT_MS   150UL
+
+// ============================================================================
+// STATE
+// ============================================================================
+
+static uint8_t  lastCmdSeq  = 0xFF;
 static uint32_t lastCmdTime = 0;
+static bool     btLinked    = false;
 
-// ==================================================
-// 🔴 CRC16 (MODBUS - ตรง Android)
-// ==================================================
-static uint16_t crc16(uint8_t *data, uint8_t len) {
+// parser state
+static uint8_t state = 0;
+static uint8_t len   = 0;
+static uint8_t idx   = 0;
+static uint8_t buffer[32];
 
+static uint32_t lastByteTime = 0;
+
+// ============================================================================
+// CRC16 MODBUS
+// ============================================================================
+
+static uint16_t crc16(uint8_t *data, uint8_t len)
+{
   uint16_t crc = 0xFFFF;
 
   for (uint8_t i = 0; i < len; i++) {
+
     crc ^= data[i];
 
     for (uint8_t j = 0; j < 8; j++) {
+
       if (crc & 1)
         crc = (crc >> 1) ^ 0xA001;
       else
@@ -37,181 +63,249 @@ static uint16_t crc16(uint8_t *data, uint8_t len) {
   return crc;
 }
 
-// ==================================================
-// 🔴 SEND ACK (PROTOCOL เดียวกับ Telemetry)
-// ==================================================
-static void sendAck(uint8_t seq, uint8_t status) {
+// ============================================================================
+// RESET PARSER
+// ============================================================================
 
-  uint8_t pkt[10];
-  uint8_t idx = 0;
-
-  // HEADER
-  pkt[idx++] = 0xAA;
-  pkt[idx++] = 0x55;
-
-  uint8_t lenIndex = idx++;
-
-  // PAYLOAD
-  pkt[idx++] = seq;
-  pkt[idx++] = status;
-
-  // LEN (payload only)
-  pkt[lenIndex] = idx - 3;
-
-  // CRC (payload only)
-  uint16_t crc = crc16(&pkt[3], idx - 3);
-
-  pkt[idx++] = crc & 0xFF;
-  pkt[idx++] = (crc >> 8) & 0xFF;
-
-  BT.write(pkt, idx);
+static void resetParser(void)
+{
+  state = 0;
+  len   = 0;
+  idx   = 0;
 }
 
-// ==================================================
-// 🔴 RECEIVE COMMAND (NON-BLOCKING + CRC + DUPLICATE SAFE)
-// ==================================================
-void btReceiveCommand(void) {
+// ============================================================================
+// SEND ACK
+// protocol เดิม
+// ============================================================================
 
-  static uint8_t state = 0;
-  static uint8_t len = 0;
-  static uint8_t idx = 0;
-  static uint8_t buffer[32];
+static void sendAck(uint8_t seq, uint8_t status)
+{
+  uint8_t pkt[10];
+  uint8_t p = 0;
+
+  pkt[p++] = 0xAA;
+  pkt[p++] = 0x55;
+
+  uint8_t lenIndex = p++;
+
+  pkt[p++] = seq;
+  pkt[p++] = status;
+
+  pkt[lenIndex] = p - 3;
+
+  uint16_t crc = crc16(&pkt[3], p - 3);
+
+  pkt[p++] = crc & 0xFF;
+  pkt[p++] = (crc >> 8) & 0xFF;
+
+  BT.write(pkt, p);
+}
+
+// ============================================================================
+// PROCESS COMMAND
+// ============================================================================
+
+static void processCommand(uint8_t seq, uint8_t cmd)
+{
+  bool isDuplicate = (seq == lastCmdSeq);
+
+  // duplicate ก็ถือว่ายังมีลิงก์อยู่
+  lastCmdTime = millis();
+  btLinked = true;
+
+  if (isDuplicate) {
+    sendAck(seq, 0x00);
+    return;
+  }
+
+  lastCmdSeq = seq;
+
+  switch (cmd) {
+
+    // ==================================================
+    // EMERGENCY STOP
+    // ==================================================
+    case 0x10:
+
+      killRequest = KillType::HARD;
+      killLatched = true;
+      killISRFlag = true;
+
+      sendAck(seq, 0x00);
+      break;
+
+    // ==================================================
+    // START SYSTEM
+    // เดิม set ACTIVE ตรง ๆ อันตรายเกินไป
+    // เปลี่ยนเป็นกลับ INIT ให้ state machine หลักจัดการเอง
+    // ==================================================
+    case 0x11:
+
+      if (!faultLatched) {
+        systemState = SystemState::INIT;
+        sendAck(seq, 0x00);
+      } else {
+        sendAck(seq, 0x02);
+      }
+
+      break;
+
+    // ==================================================
+    // RESET FAULT
+    // ==================================================
+    case 0x12:
+
+      clearFault();
+      sendAck(seq, 0x00);
+      break;
+
+    // ==================================================
+    // HEARTBEAT
+    // ==================================================
+    case 0x01:
+
+      sendAck(seq, 0x00);
+      break;
+
+    // ==================================================
+    // UNKNOWN
+    // ==================================================
+    default:
+
+      sendAck(seq, 0x01);
+      break;
+  }
+}
+
+// ============================================================================
+// RECEIVE COMMAND
+// ============================================================================
+
+void btReceiveCommand(void)
+{
+  uint32_t now = millis();
+
+  // parser stall protection
+  if (state != 0) {
+    if (now - lastByteTime > PARSER_TIMEOUT_MS) {
+      resetParser();
+    }
+  }
 
   while (BT.available()) {
 
     uint8_t b = BT.read();
+    lastByteTime = now;
 
     switch (state) {
 
-      // -----------------------------
+      // ------------------------------------------------
       // HEADER 1
-      // -----------------------------
+      // ------------------------------------------------
       case 0:
-        if (b == 0xAA) state = 1;
+
+        if (b == 0xAA)
+          state = 1;
+
         break;
 
-      // -----------------------------
+      // ------------------------------------------------
       // HEADER 2
-      // -----------------------------
+      // ------------------------------------------------
       case 1:
-        if (b == 0x55) state = 2;
-        else state = 0;
+
+        if (b == 0x55)
+          state = 2;
+        else
+          resetParser();
+
         break;
 
-      // -----------------------------
+      // ------------------------------------------------
       // LEN
-      // -----------------------------
+      // ------------------------------------------------
       case 2:
+
         if (b < 2 || b > 28) {
-          state = 0;
+          resetParser();
         } else {
           len = b;
           idx = 0;
           state = 3;
         }
+
         break;
 
-      // -----------------------------
+      // ------------------------------------------------
       // PAYLOAD + CRC
-      // -----------------------------
+      // ------------------------------------------------
       case 3:
-        buffer[idx++] = b;
 
-        if (idx >= len + 2) {
-          state = 4;
+        if (idx < sizeof(buffer)) {
+          buffer[idx++] = b;
+        } else {
+          resetParser();
+          break;
         }
-        break;
 
-      // -----------------------------
-      // PROCESS PACKET
-      // -----------------------------
-      case 4: {
+        if (idx >= (uint8_t)(len + 2)) {
 
-        uint16_t crcCalc = crc16(buffer, len);
+          uint16_t crcCalc = crc16(buffer, len);
 
-        uint16_t crcRecv =
-          buffer[len] |
-          (buffer[len + 1] << 8);
+          uint16_t crcRecv =
+            buffer[len] |
+            (buffer[len + 1] << 8);
 
-        if (crcCalc == crcRecv) {
+          if (crcCalc == crcRecv) {
 
-          uint8_t i = 0;
-          uint8_t seq = buffer[i++];
-          uint8_t cmd = buffer[i++];
+            uint8_t seq = buffer[0];
+            uint8_t cmd = buffer[1];
 
-          bool isDuplicate = (seq == lastCmdSeq);
-
-          if (!isDuplicate) {
-
-            lastCmdSeq = seq;
-            lastCmdTime = millis();
-
-            switch (cmd) {
-
-              // ==============================
-              // 🔴 EMERGENCY STOP (CRITICAL)
-              // ==============================
-              case 0x10:
-                killRequest = KillType::HARD;
-                killLatched = true;
-                killISRFlag = true;
-                sendAck(seq, 0x00);
-                break;
-
-              // ==============================
-              // START SYSTEM
-              // ==============================
-              case 0x11:
-                systemState = SystemState::ACTIVE;
-                sendAck(seq, 0x00);
-                break;
-
-              // ==============================
-              // RESET FAULT
-              // ==============================
-              case 0x12:
-                clearFault();
-                sendAck(seq, 0x00);
-                break;
-
-              // ==============================
-              // UNKNOWN CMD
-              // ==============================
-              default:
-                sendAck(seq, 0x01);
-                break;
-            }
-
-          } else {
-            // 🔴 duplicate → ACK ซ้ำ
-            sendAck(seq, 0x00);
+            processCommand(seq, cmd);
           }
+
+          resetParser();
         }
 
-        state = 0;
         break;
-      }
 
       default:
-        state = 0;
+
+        resetParser();
         break;
     }
   }
 }
 
-// ==================================================
-// 🔴 SAFETY CHECK (FIX LINK ERROR ตรงนี้แหละ)
-// ==================================================
-void btSafetyCheck(void) {
+// ============================================================================
+// SAFETY CHECK
+// ============================================================================
 
-  // 🔴 ถ้าล็อกแล้ว ไม่ต้องทำอะไร
-  if (killLatched) return;
+void btSafetyCheck(void)
+{
+  if (killLatched)
+    return;
 
-  // 🔴 ยังไม่เคยรับคำสั่ง
-  if (lastCmdTime == 0) return;
+  if (!btLinked)
+    return;
 
-  // 🔴 timeout → HARD KILL
-  if (millis() - lastCmdTime > CMD_TIMEOUT) {
+  uint32_t dt = millis() - lastCmdTime;
+
+  // --------------------------------------------------
+  // stage 1 : command หาย -> สั่งหยุดนุ่มนวล
+  // --------------------------------------------------
+  if (dt > CMD_WARN_TIMEOUT &&
+      dt <= CMD_KILL_TIMEOUT) {
+
+    targetL = 0.0f;
+    targetR = 0.0f;
+  }
+
+  // --------------------------------------------------
+  // stage 2 : หายนานจริง -> hard kill
+  // --------------------------------------------------
+  if (dt > CMD_KILL_TIMEOUT) {
 
     killRequest = KillType::HARD;
     killLatched = true;
