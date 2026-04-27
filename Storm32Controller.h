@@ -9,13 +9,13 @@
 // EEPROM
 // ======================================================
 #define EEPROM_STORM32_BASE 200
-#define STORM32_MAGIC 0x32B3
+#define STORM32_MAGIC       0x32B3
 
 // ======================================================
 // SERIAL PROTOCOL
 // ======================================================
-#define STORM32_START_BYTE   0xFA
-#define STORM32_CMD_CONTROL  0x19
+#define STORM32_START_BYTE  0xFA
+#define STORM32_CMD_CONTROL 0x19
 
 // ======================================================
 // RC CHANNEL
@@ -24,40 +24,18 @@
 #define STORM32_CH_YAW   9
 
 // ======================================================
-// PWM OUTPUT PIN (Mega2560)
-// ======================================================
-#define GIMBAL_PWM_PIN_PITCH 10
-#define GIMBAL_PWM_PIN_YAW   11
-
-// ======================================================
-// FRAME
-// ======================================================
-#define STORM32_MAX_FRAME 32
-
-// ======================================================
-// STATE
+// STATE (ลดให้เหลือเท่าที่จำเป็น)
 // ======================================================
 enum class Storm32State : uint8_t
 {
-  INIT,
-  OK,
-  DEGRADED,
-  LOST,
-  EMERGENCY
+  INIT,        // ยังไม่พร้อม
+  OK,          // ทำงานปกติ
+  LOST,        // ไม่ตอบสนอง
+  EMERGENCY    // ถูกล็อก
 };
 
 // ======================================================
-// OUTPUT MODE
-// ======================================================
-enum class GimbalOutputMode : uint8_t
-{
-  MODE_SERIAL = 0,
-  MODE_PWM    = 1,
-  MODE_AUTO   = 2
-};
-
-// ======================================================
-// CONFIG
+// CONFIG (ลดให้เหลือพื้นฐาน)
 // ======================================================
 struct Storm32Config
 {
@@ -67,14 +45,9 @@ struct Storm32Config
   float pitchLimitDeg;
   float yawLimitDeg;
 
-  float slewNormal;
-  float slewDegraded;
+  float slewRateDegPerSec;
 
-  uint16_t ackTimeout1;
-  uint16_t ackTimeout2;
-  uint16_t ackTimeout3;
-
-  uint8_t outputMode;
+  uint16_t ackTimeoutMs;
 
   uint16_t magic;
 };
@@ -89,73 +62,75 @@ public:
   Storm32Controller(HardwareSerial& serial,
                     IBusBM& ibus);
 
+  // เริ่มระบบ
   void begin();
+
+  // เรียกใน loop()
   void update(uint32_t now);
 
+  // ปิดฉุกเฉิน
   void forceOff();
+
+  // ล็อก/ปลดล็อก
   void hardDisable(bool enable);
+
+  // เปิด/ปิดตามระบบหลัก
   void setSystemEnabled(bool enable);
+
+  // ล้าง emergency
   void clearEmergency();
 
-  void setOutputMode(GimbalOutputMode mode);
-  GimbalOutputMode getOutputMode() const;
-
+  // อ่านสถานะ
   Storm32State getState() const;
+
+  // ถูกล็อกหรือไม่
   bool isLocked() const;
 
 private:
 
-  // ----------------------------------------
-  // REF
-  // ----------------------------------------
+  // ====================================================
+  // REFERENCE
+  // ====================================================
   HardwareSerial& stormSerial;
   IBusBM& ibus;
 
-  // ----------------------------------------
+  // ====================================================
   // CONFIG
-  // ----------------------------------------
+  // ====================================================
   Storm32Config cfg;
+
+  // ====================================================
+  // STATE
+  // ====================================================
   Storm32State state;
-  GimbalOutputMode mode;
 
   bool hardDisabled;
   bool systemEnabled;
 
-  // ----------------------------------------
+  // ====================================================
   // TIME
-  // ----------------------------------------
+  // ====================================================
   uint32_t lastAckMs;
   uint32_t lastTxMs;
   uint32_t lastUpdateMs;
 
-  uint32_t lastPwmFrameMs;
-  uint32_t autoModeStartMs;
-
-  // ----------------------------------------
-  // TARGET
-  // ----------------------------------------
+  // ====================================================
+  // TARGET / CURRENT
+  // ====================================================
   float targetPitch;
   float targetYaw;
 
   float currentPitch;
   float currentYaw;
 
-  // ----------------------------------------
-  // PARSER
-  // ----------------------------------------
-  uint8_t frameBuf[STORM32_MAX_FRAME];
-  uint8_t frameIndex;
-  bool frameActive;
-
-  // ----------------------------------------
+  // ====================================================
   // CONST
-  // ----------------------------------------
-  static constexpr uint16_t TX_PERIOD_MS = 100;
-  static constexpr uint16_t PWM_FRAME_MS = 20;
+  // ====================================================
+  static constexpr uint16_t TX_PERIOD_MS = 50; // 20Hz
 
-  // ----------------------------------------
+  // ====================================================
   // INTERNAL
-  // ----------------------------------------
+  // ====================================================
   void updateTargetFromIBUS();
   void applyMotion(float dt);
   void updateWDT(uint32_t now);
@@ -168,16 +143,10 @@ private:
                    float tgt,
                    float maxStep);
 
-  // SERIAL
   void processSerial(uint32_t now);
-  void parseByte(uint8_t b, uint32_t now);
+
   void sendBinaryControl(int16_t pitch,
                          int16_t yaw);
-
-  // PWM
-  void sendPwmControl(uint32_t now);
-  uint16_t degToUs(float deg,
-                   float limit);
 
   void sendDriveOff();
 
@@ -195,4 +164,3 @@ private:
 Storm32Controller& getGimbal();
 
 #endif
-
