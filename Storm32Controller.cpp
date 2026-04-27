@@ -1,18 +1,18 @@
 #include "Storm32Controller.h"
 #include "GlobalState.h"
 
-// =================================================
-// SINGLETON ACCESSOR
-// =================================================
+// ======================================================
+// SINGLETON
+// ======================================================
 Storm32Controller& getGimbal()
 {
   static Storm32Controller gimbal(Serial3, ibus);
   return gimbal;
 }
 
-// =================================================
+// ======================================================
 // CONSTRUCTOR
-// =================================================
+// ======================================================
 Storm32Controller::Storm32Controller(HardwareSerial& serial,
                                      IBusBM& ib)
   : stormSerial(serial),
@@ -20,23 +20,35 @@ Storm32Controller::Storm32Controller(HardwareSerial& serial,
 {
 }
 
-// =================================================
+// ======================================================
 // BEGIN
-// =================================================
+// ======================================================
 void Storm32Controller::begin()
 {
+  pinMode(GIMBAL_PWM_PIN_PITCH, OUTPUT);
+  pinMode(GIMBAL_PWM_PIN_YAW, OUTPUT);
+
+  digitalWrite(GIMBAL_PWM_PIN_PITCH, LOW);
+  digitalWrite(GIMBAL_PWM_PIN_YAW, LOW);
+
   stormSerial.begin(115200);
 
   loadConfig();
+
+  mode = (GimbalOutputMode)cfg.outputMode;
 
   uint32_t now = millis();
 
   state = Storm32State::INIT;
 
+  hardDisabled = false;
+  systemEnabled = false;
+
   lastAckMs = now;
   lastTxMs = now;
   lastUpdateMs = now;
-  lastPhaseSwitchMs = now;
+  lastPwmFrameMs = now;
+  autoModeStartMs = now;
 
   targetPitch = 0.0f;
   targetYaw   = 0.0f;
@@ -44,91 +56,17 @@ void Storm32Controller::begin()
   currentPitch = 0.0f;
   currentYaw   = 0.0f;
 
-  hardDisabled = false;
-  systemEnabled = false;
-
   frameIndex = 0;
-  frameLength = 0;
   frameActive = false;
 }
 
-// =================================================
-// FORCE OFF
-// =================================================
-void Storm32Controller::forceOff()
-{
-  hardDisabled = true;
-  state = Storm32State::EMERGENCY;
-  sendDriveOff();
-}
-
-// =================================================
-// HARD DISABLE
-// =================================================
-void Storm32Controller::hardDisable(bool enable)
-{
-  hardDisabled = enable;
-
-  if (hardDisabled)
-  {
-    state = Storm32State::EMERGENCY;
-    sendDriveOff();
-  }
-}
-
-// =================================================
-// SYSTEM ENABLE
-// =================================================
-void Storm32Controller::setSystemEnabled(bool enable)
-{
-  systemEnabled = enable;
-
-  if (!systemEnabled)
-  {
-    if (!hardDisabled)
-      state = Storm32State::INIT;
-
-    sendDriveOff();
-  }
-}
-
-// =================================================
-// CLEAR EMERGENCY
-// =================================================
-void Storm32Controller::clearEmergency()
-{
-  if (hardDisabled)
-    return;
-
-  if (state == Storm32State::EMERGENCY ||
-      state == Storm32State::INIT ||
-      state == Storm32State::LOST)
-  {
-    uint32_t now = millis();
-
-    state = Storm32State::OK;
-
-    lastAckMs = now;
-    lastTxMs = now;
-    lastUpdateMs = now;
-
-    targetPitch = 0.0f;
-    targetYaw   = 0.0f;
-
-    currentPitch = 0.0f;
-    currentYaw   = 0.0f;
-  }
-}
-
-// =================================================
+// ======================================================
 // UPDATE
-// =================================================
+// ======================================================
 void Storm32Controller::update(uint32_t now)
 {
-  uint32_t dtMs = now - lastUpdateMs;
+  float dt = (now - lastUpdateMs) * 0.001f;
   lastUpdateMs = now;
-
-  float dt = dtMs * 0.001f;
 
   if (dt <= 0.0f) dt = 0.001f;
   if (dt > 0.1f)  dt = 0.1f;
@@ -145,73 +83,136 @@ void Storm32Controller::update(uint32_t now)
     return;
   }
 
-  // ---------------------------------------------
-  // Scheduler phase
-  // ---------------------------------------------
-  if (now - lastPhaseSwitchMs >=
-      (CONTROL_WINDOW_MS + COMM_WINDOW_MS))
-  {
-    lastPhaseSwitchMs = now;
-  }
+  updateTargetFromIBUS();
+  applyMotion(dt);
 
-  uint32_t phaseTime = now - lastPhaseSwitchMs;
-  bool controlPhase = (phaseTime < CONTROL_WINDOW_MS);
-
-  if (controlPhase)
-  {
-    updateTargetFromIBUS();
-    applyMotion(dt);
-  }
-  else
-  {
-    processSerial(now);
-  }
-
+  processSerial(now);
   updateWDT(now);
 
-  if (state == Storm32State::EMERGENCY)
+  // ------------------------------------------
+  // AUTO MODE
+  // ------------------------------------------
+  if (mode == GimbalOutputMode::MODE_AUTO)
   {
-    sendDriveOff();
+    if ((now - autoModeStartMs) < 3000UL)
+    {
+      sendBinaryControl(
+        (int16_t)(currentPitch * 100.0f),
+        (int16_t)(currentYaw   * 100.0f));
+    }
+    else
+    {
+      if (now - lastAckMs > 1000UL)
+      {
+        sendPwmControl(now);
+      }
+      else
+      {
+        sendBinaryControl(
+          (int16_t)(currentPitch * 100.0f),
+          (int16_t)(currentYaw   * 100.0f));
+      }
+    }
+
     return;
   }
 
-  // ---------------------------------------------
-  // TX command
-  // ---------------------------------------------
-  if (now - lastTxMs >= TX_PERIOD_MS)
+  // ------------------------------------------
+  // SERIAL MODE
+  // ------------------------------------------
+  if (mode == GimbalOutputMode::MODE_SERIAL)
   {
-    int16_t p = (int16_t)(currentPitch * 100.0f);
-    int16_t y = (int16_t)(currentYaw   * 100.0f);
+    if (now - lastTxMs >= TX_PERIOD_MS)
+    {
+      sendBinaryControl(
+        (int16_t)(currentPitch * 100.0f),
+        (int16_t)(currentYaw   * 100.0f));
 
-    sendBinaryControl(p, y);
-    lastTxMs = now;
+      lastTxMs = now;
+    }
+
+    return;
   }
+
+  // ------------------------------------------
+  // PWM MODE
+  // ------------------------------------------
+  sendPwmControl(now);
 }
 
-// =================================================
-// PROCESS SERIAL
-// =================================================
-void Storm32Controller::processSerial(uint32_t now)
+// ======================================================
+// FORCE OFF
+// ======================================================
+void Storm32Controller::forceOff()
 {
-  uint32_t startUs = micros();
-  uint8_t count = 0;
+  hardDisabled = true;
+  state = Storm32State::EMERGENCY;
+  sendDriveOff();
+}
 
-  while (stormSerial.available())
+// ======================================================
+// HARD DISABLE
+// ======================================================
+void Storm32Controller::hardDisable(bool enable)
+{
+  hardDisabled = enable;
+
+  if (hardDisabled)
   {
-    if (++count > 24)
-      break;
-
-    if (micros() - startUs > SERIAL_BUDGET_US)
-      break;
-
-    uint8_t b = stormSerial.read();
-    parseByte(b, now);
+    state = Storm32State::EMERGENCY;
+    sendDriveOff();
   }
 }
 
-// =================================================
-// UPDATE TARGET FROM IBUS
-// =================================================
+// ======================================================
+// SYSTEM ENABLE
+// ======================================================
+void Storm32Controller::setSystemEnabled(bool enable)
+{
+  systemEnabled = enable;
+
+  if (!systemEnabled && !hardDisabled)
+  {
+    state = Storm32State::INIT;
+    sendDriveOff();
+  }
+}
+
+// ======================================================
+// CLEAR EMERGENCY
+// ======================================================
+void Storm32Controller::clearEmergency()
+{
+  if (hardDisabled)
+    return;
+
+  state = Storm32State::OK;
+
+  uint32_t now = millis();
+
+  lastAckMs = now;
+  lastTxMs = now;
+  autoModeStartMs = now;
+}
+
+// ======================================================
+// MODE
+// ======================================================
+void Storm32Controller::setOutputMode(GimbalOutputMode m)
+{
+  mode = m;
+  cfg.outputMode = (uint8_t)m;
+  saveConfig();
+}
+
+GimbalOutputMode Storm32Controller::getOutputMode() const
+{
+  return mode;
+}
+
+// ======================================================
+// TARGET FROM IBUS
+// ======================================================
 void Storm32Controller::updateTargetFromIBUS()
 {
   uint16_t rcPitch = ibus.readChannel(STORM32_CH_PITCH);
@@ -231,9 +232,9 @@ void Storm32Controller::updateTargetFromIBUS()
                cfg.invertYaw);
 }
 
-// =================================================
+// ======================================================
 // APPLY MOTION
-// =================================================
+// ======================================================
 void Storm32Controller::applyMotion(float dt)
 {
   float slew =
@@ -241,56 +242,37 @@ void Storm32Controller::applyMotion(float dt)
       ? cfg.slewDegraded
       : cfg.slewNormal;
 
-  float maxStep = slew * dt;
+  float step = slew * dt;
 
   currentPitch =
-    stepToward(currentPitch,
-               targetPitch,
-               maxStep);
+    stepToward(currentPitch, targetPitch, step);
 
   currentYaw =
-    stepToward(currentYaw,
-               targetYaw,
-               maxStep);
-
-  currentPitch =
-    constrain(currentPitch,
-              -cfg.pitchLimitDeg,
-               cfg.pitchLimitDeg);
-
-  currentYaw =
-    constrain(currentYaw,
-              -cfg.yawLimitDeg,
-               cfg.yawLimitDeg);
+    stepToward(currentYaw, targetYaw, step);
 }
 
-// =================================================
-// STEP TOWARD
-// =================================================
+// ======================================================
+// STEP
+// ======================================================
 float Storm32Controller::stepToward(float cur,
                                     float tgt,
                                     float maxStep)
 {
-  float diff = tgt - cur;
+  float d = tgt - cur;
 
-  if (fabs(diff) < 0.02f)
-    return cur;
-
-  if (fabs(diff) <= maxStep)
+  if (fabs(d) <= maxStep)
     return tgt;
 
-  return cur + ((diff > 0.0f) ? maxStep : -maxStep);
+  return cur + ((d > 0) ? maxStep : -maxStep);
 }
 
-// =================================================
-// MAP RC TO DEG
-// =================================================
+// ======================================================
+// MAP RC
+// ======================================================
 float Storm32Controller::mapRCtoDeg(uint16_t rc,
                                     float limit,
                                     bool invert)
 {
-  rc = constrain(rc, 1000, 2000);
-
   float v =
     ((float)rc - 1500.0f) / 500.0f * limit;
 
@@ -300,50 +282,12 @@ float Storm32Controller::mapRCtoDeg(uint16_t rc,
   return v;
 }
 
-// =================================================
-// WATCHDOG
-// =================================================
-void Storm32Controller::updateWDT(uint32_t now)
-{
-  uint32_t dt = now - lastAckMs;
-
-  switch (state)
-  {
-    case Storm32State::OK:
-      if (dt > cfg.ackTimeout1)
-        state = Storm32State::DEGRADED;
-      break;
-
-    case Storm32State::DEGRADED:
-      if (dt > cfg.ackTimeout2)
-        state = Storm32State::LOST;
-      break;
-
-    case Storm32State::LOST:
-      if (dt > cfg.ackTimeout3)
-        state = Storm32State::EMERGENCY;
-      break;
-
-    default:
-      break;
-  }
-}
-
-// =================================================
-// SEND CONTROL
-// =================================================
+// ======================================================
+// SERIAL TX
+// ======================================================
 void Storm32Controller::sendBinaryControl(int16_t pitch,
                                           int16_t yaw)
 {
-  int16_t maxP =
-    (int16_t)(cfg.pitchLimitDeg * 100.0f);
-
-  int16_t maxY =
-    (int16_t)(cfg.yawLimitDeg * 100.0f);
-
-  pitch = constrain(pitch, -maxP, maxP);
-  yaw   = constrain(yaw,   -maxY, maxY);
-
   uint8_t pkt[9];
 
   pkt[0] = STORM32_START_BYTE;
@@ -364,21 +308,65 @@ void Storm32Controller::sendBinaryControl(int16_t pitch,
   stormSerial.write(pkt, 9);
 }
 
-// =================================================
-// DRIVE OFF
-// =================================================
-void Storm32Controller::sendDriveOff()
+// ======================================================
+// PWM TX
+// ======================================================
+void Storm32Controller::sendPwmControl(uint32_t now)
 {
-  sendBinaryControl(0, 0);
+  if (now - lastPwmFrameMs < PWM_FRAME_MS)
+    return;
+
+  lastPwmFrameMs = now;
+
+  uint16_t usPitch =
+    degToUs(currentPitch, cfg.pitchLimitDeg);
+
+  uint16_t usYaw =
+    degToUs(currentYaw, cfg.yawLimitDeg);
+
+  digitalWrite(GIMBAL_PWM_PIN_PITCH, HIGH);
+  delayMicroseconds(usPitch);
+  digitalWrite(GIMBAL_PWM_PIN_PITCH, LOW);
+
+  digitalWrite(GIMBAL_PWM_PIN_YAW, HIGH);
+  delayMicroseconds(usYaw);
+  digitalWrite(GIMBAL_PWM_PIN_YAW, LOW);
 }
 
-// =================================================
-// PARSER (SAFE STUB)
-// =================================================
+// ======================================================
+// DEG TO PWM
+// ======================================================
+uint16_t Storm32Controller::degToUs(float deg,
+                                    float limit)
+{
+  if (limit < 1.0f)
+    limit = 1.0f;
+
+  deg = constrain(deg, -limit, limit);
+
+  long us = map((long)(deg * 100),
+                (long)(-limit * 100),
+                (long)( limit * 100),
+                1000,
+                2000);
+
+  return (uint16_t)us;
+}
+
+// ======================================================
+// SERIAL RX
+// ======================================================
+void Storm32Controller::processSerial(uint32_t now)
+{
+  while (stormSerial.available())
+  {
+    parseByte(stormSerial.read(), now);
+  }
+}
+
 void Storm32Controller::parseByte(uint8_t b,
                                   uint32_t now)
 {
-  // มี byte กลับมา ถือว่าสื่อสารได้ระดับหนึ่ง
   lastAckMs = now;
 
   if (state == Storm32State::DEGRADED ||
@@ -395,6 +383,7 @@ void Storm32Controller::parseByte(uint8_t b,
       frameIndex = 0;
       frameBuf[frameIndex++] = b;
     }
+
     return;
   }
 
@@ -407,17 +396,59 @@ void Storm32Controller::parseByte(uint8_t b,
   }
 }
 
-// =================================================
-// CRC16
-// =================================================
-uint16_t Storm32Controller::crc16_ccitt(const uint8_t* data,
-                                        uint8_t len)
+// ======================================================
+// WATCHDOG
+// ======================================================
+void Storm32Controller::updateWDT(uint32_t now)
+{
+  uint32_t dt = now - lastAckMs;
+
+  if (state == Storm32State::OK &&
+      dt > cfg.ackTimeout1)
+  {
+    state = Storm32State::DEGRADED;
+  }
+
+  if (state == Storm32State::DEGRADED &&
+      dt > cfg.ackTimeout2)
+  {
+    state = Storm32State::LOST;
+  }
+
+  if (state == Storm32State::LOST &&
+      dt > cfg.ackTimeout3)
+  {
+    state = Storm32State::EMERGENCY;
+  }
+}
+
+// ======================================================
+// OFF
+// ======================================================
+void Storm32Controller::sendDriveOff()
+{
+  if (mode == GimbalOutputMode::MODE_PWM)
+  {
+    digitalWrite(GIMBAL_PWM_PIN_PITCH, LOW);
+    digitalWrite(GIMBAL_PWM_PIN_YAW, LOW);
+    return;
+  }
+
+  sendBinaryControl(0, 0);
+}
+
+// ======================================================
+// CRC
+// ======================================================
+uint16_t Storm32Controller::crc16_ccitt(
+  const uint8_t* data,
+  uint8_t len)
 {
   uint16_t crc = 0xFFFF;
 
   for (uint8_t i = 0; i < len; i++)
   {
-    crc ^= (uint16_t)data[i] << 8;
+    crc ^= ((uint16_t)data[i] << 8);
 
     for (uint8_t j = 0; j < 8; j++)
     {
@@ -431,9 +462,9 @@ uint16_t Storm32Controller::crc16_ccitt(const uint8_t* data,
   return crc;
 }
 
-// =================================================
+// ======================================================
 // EEPROM
-// =================================================
+// ======================================================
 void Storm32Controller::loadConfig()
 {
   EEPROM.get(EEPROM_STORM32_BASE, cfg);
@@ -466,12 +497,15 @@ void Storm32Controller::setDefaultConfig()
   cfg.ackTimeout2 = 900;
   cfg.ackTimeout3 = 2000;
 
+  cfg.outputMode =
+    (uint8_t)GimbalOutputMode::MODE_AUTO;
+
   cfg.magic = STORM32_MAGIC;
 }
 
-// =================================================
+// ======================================================
 // STATUS
-// =================================================
+// ======================================================
 Storm32State Storm32Controller::getState() const
 {
   return state;

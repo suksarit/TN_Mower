@@ -152,7 +152,7 @@ constexpr uint8_t SERVO_ENGINE_PIN = 9;
 // ไฟส่องสว่าง
 // ======================================================
 #define CH_LIGHT 5     // ช่องรีโมท (เช่น CH6 จริง)
-#define PIN_LIGHT 30   // ขา output ไฟ
+#define PIN_LIGHT 32   // ขา output ไฟ
 
 // ======================================================
 // IBUS
