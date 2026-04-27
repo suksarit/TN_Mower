@@ -11,10 +11,17 @@ Storm32Controller& getGimbal()
 }
 
 // =================================================
+// CONSTRUCTOR
+// =================================================
 Storm32Controller::Storm32Controller(HardwareSerial& serial,
                                      IBusBM& ib)
-  : stormSerial(serial), ibus(ib) {}
+  : stormSerial(serial),
+    ibus(ib)
+{
+}
 
+// =================================================
+// BEGIN
 // =================================================
 void Storm32Controller::begin()
 {
@@ -22,17 +29,20 @@ void Storm32Controller::begin()
 
   loadConfig();
 
-  state = Storm32State::INIT;
-
   uint32_t now = millis();
+
+  state = Storm32State::INIT;
 
   lastAckMs = now;
   lastTxMs = now;
   lastUpdateMs = now;
   lastPhaseSwitchMs = now;
 
-  targetPitch = targetYaw = 0.0f;
-  currentPitch = currentYaw = 0.0f;
+  targetPitch = 0.0f;
+  targetYaw   = 0.0f;
+
+  currentPitch = 0.0f;
+  currentYaw   = 0.0f;
 
   hardDisabled = false;
   systemEnabled = false;
@@ -43,7 +53,7 @@ void Storm32Controller::begin()
 }
 
 // =================================================
-// ================= CONTROL API ==================
+// FORCE OFF
 // =================================================
 void Storm32Controller::forceOff()
 {
@@ -52,46 +62,66 @@ void Storm32Controller::forceOff()
   sendDriveOff();
 }
 
+// =================================================
+// HARD DISABLE
+// =================================================
 void Storm32Controller::hardDisable(bool enable)
 {
   hardDisabled = enable;
 
   if (hardDisabled)
+  {
+    state = Storm32State::EMERGENCY;
     sendDriveOff();
+  }
 }
 
+// =================================================
+// SYSTEM ENABLE
+// =================================================
 void Storm32Controller::setSystemEnabled(bool enable)
 {
   systemEnabled = enable;
 
   if (!systemEnabled)
+  {
+    if (!hardDisabled)
+      state = Storm32State::INIT;
+
     sendDriveOff();
+  }
 }
 
+// =================================================
+// CLEAR EMERGENCY
+// =================================================
 void Storm32Controller::clearEmergency()
 {
   if (hardDisabled)
     return;
 
-  if (state == Storm32State::EMERGENCY)
+  if (state == Storm32State::EMERGENCY ||
+      state == Storm32State::INIT ||
+      state == Storm32State::LOST)
   {
-    state = Storm32State::INIT;
-
     uint32_t now = millis();
 
+    state = Storm32State::OK;
+
     lastAckMs = now;
+    lastTxMs = now;
     lastUpdateMs = now;
 
-    targetPitch = 0;
-    targetYaw = 0;
+    targetPitch = 0.0f;
+    targetYaw   = 0.0f;
 
-    currentPitch = 0;
-    currentYaw = 0;
+    currentPitch = 0.0f;
+    currentYaw   = 0.0f;
   }
 }
 
 // =================================================
-// ================= UPDATE ========================
+// UPDATE
 // =================================================
 void Storm32Controller::update(uint32_t now)
 {
@@ -100,31 +130,31 @@ void Storm32Controller::update(uint32_t now)
 
   float dt = dtMs * 0.001f;
 
-  if (dt <= 0) dt = 0.001f;
-  if (dt > 0.1f) dt = 0.1f;
+  if (dt <= 0.0f) dt = 0.001f;
+  if (dt > 0.1f)  dt = 0.1f;
 
   bool locked =
-      (state == Storm32State::INIT) ||
-      !systemEnabled ||
       hardDisabled ||
-      (state == Storm32State::EMERGENCY);
+      !systemEnabled ||
+      state == Storm32State::INIT ||
+      state == Storm32State::EMERGENCY;
 
   if (locked)
   {
     sendDriveOff();
-    updateWDT(now);
     return;
   }
 
-  // ------------------------------------------------
-  // PHASE SWITCH
-  // ------------------------------------------------
-
-  if (now - lastPhaseSwitchMs >= (CONTROL_WINDOW_MS + COMM_WINDOW_MS))
+  // ---------------------------------------------
+  // Scheduler phase
+  // ---------------------------------------------
+  if (now - lastPhaseSwitchMs >=
+      (CONTROL_WINDOW_MS + COMM_WINDOW_MS))
+  {
     lastPhaseSwitchMs = now;
+  }
 
   uint32_t phaseTime = now - lastPhaseSwitchMs;
-
   bool controlPhase = (phaseTime < CONTROL_WINDOW_MS);
 
   if (controlPhase)
@@ -134,29 +164,9 @@ void Storm32Controller::update(uint32_t now)
   }
   else
   {
-    uint32_t startRx = micros();
-    uint8_t rxCount = 0;
-
-    while (stormSerial.available())
-    {
-      if (++rxCount > 24)
-        break;
-
-      if (stormSerial.available() > 48)
-      {
-        stormSerial.read();
-        continue;
-      }
-
-      if (micros() - startRx >= SERIAL_BUDGET_US)
-        break;
-
-      uint8_t b = stormSerial.read();
-      parseByte(b, now);
-    }
+    processSerial(now);
   }
 
-  // ================= WATCHDOG =================
   updateWDT(now);
 
   if (state == Storm32State::EMERGENCY)
@@ -165,26 +175,42 @@ void Storm32Controller::update(uint32_t now)
     return;
   }
 
-  // ================= TX =================
-
+  // ---------------------------------------------
+  // TX command
+  // ---------------------------------------------
   if (now - lastTxMs >= TX_PERIOD_MS)
   {
-    uint32_t startTx = micros();
-
     int16_t p = (int16_t)(currentPitch * 100.0f);
-    int16_t y = (int16_t)(currentYaw * 100.0f);
+    int16_t y = (int16_t)(currentYaw   * 100.0f);
 
     sendBinaryControl(p, y);
-
-    if (micros() - startTx > TX_BUDGET_US)
-      enterState(Storm32State::DEGRADED);
-
     lastTxMs = now;
   }
 }
 
 // =================================================
-// ================== iBUS ========================
+// PROCESS SERIAL
+// =================================================
+void Storm32Controller::processSerial(uint32_t now)
+{
+  uint32_t startUs = micros();
+  uint8_t count = 0;
+
+  while (stormSerial.available())
+  {
+    if (++count > 24)
+      break;
+
+    if (micros() - startUs > SERIAL_BUDGET_US)
+      break;
+
+    uint8_t b = stormSerial.read();
+    parseByte(b, now);
+  }
+}
+
+// =================================================
+// UPDATE TARGET FROM IBUS
 // =================================================
 void Storm32Controller::updateTargetFromIBUS()
 {
@@ -195,52 +221,55 @@ void Storm32Controller::updateTargetFromIBUS()
   rcYaw   = constrain(rcYaw,   1000, 2000);
 
   targetPitch =
-      mapRCtoDeg(rcPitch,
-                 cfg.pitchLimitDeg,
-                 cfg.invertPitch);
+    mapRCtoDeg(rcPitch,
+               cfg.pitchLimitDeg,
+               cfg.invertPitch);
 
   targetYaw =
-      mapRCtoDeg(rcYaw,
-                 cfg.yawLimitDeg,
-                 cfg.invertYaw);
+    mapRCtoDeg(rcYaw,
+               cfg.yawLimitDeg,
+               cfg.invertYaw);
 }
 
 // =================================================
-// ================= MOTION =======================
+// APPLY MOTION
 // =================================================
 void Storm32Controller::applyMotion(float dt)
 {
   float slew =
-      (state == Storm32State::DEGRADED)
-          ? cfg.slewDegraded
-          : cfg.slewNormal;
+    (state == Storm32State::DEGRADED)
+      ? cfg.slewDegraded
+      : cfg.slewNormal;
 
   float maxStep = slew * dt;
 
   currentPitch =
-      stepToward(currentPitch,
-                 targetPitch,
-                 maxStep);
+    stepToward(currentPitch,
+               targetPitch,
+               maxStep);
 
   currentYaw =
-      stepToward(currentYaw,
-                 targetYaw,
-                 maxStep);
+    stepToward(currentYaw,
+               targetYaw,
+               maxStep);
 
   currentPitch =
-      constrain(currentPitch,
-                -cfg.pitchLimitDeg,
-                cfg.pitchLimitDeg);
+    constrain(currentPitch,
+              -cfg.pitchLimitDeg,
+               cfg.pitchLimitDeg);
 
   currentYaw =
-      constrain(currentYaw,
-                -cfg.yawLimitDeg,
-                cfg.yawLimitDeg);
+    constrain(currentYaw,
+              -cfg.yawLimitDeg,
+               cfg.yawLimitDeg);
 }
 
+// =================================================
+// STEP TOWARD
+// =================================================
 float Storm32Controller::stepToward(float cur,
-                                     float tgt,
-                                     float maxStep)
+                                    float tgt,
+                                    float maxStep)
 {
   float diff = tgt - cur;
 
@@ -250,35 +279,29 @@ float Storm32Controller::stepToward(float cur,
   if (fabs(diff) <= maxStep)
     return tgt;
 
-  return cur + (diff > 0 ? maxStep : -maxStep);
+  return cur + ((diff > 0.0f) ? maxStep : -maxStep);
 }
 
 // =================================================
-// ================= CRC16 ========================
+// MAP RC TO DEG
 // =================================================
-uint16_t Storm32Controller::crc16_ccitt(const uint8_t* data,
-                                         uint8_t len)
+float Storm32Controller::mapRCtoDeg(uint16_t rc,
+                                    float limit,
+                                    bool invert)
 {
-  uint16_t crc = 0xFFFF;
+  rc = constrain(rc, 1000, 2000);
 
-  for (uint8_t i = 0; i < len; i++)
-  {
-    crc ^= (uint16_t)data[i] << 8;
+  float v =
+    ((float)rc - 1500.0f) / 500.0f * limit;
 
-    for (uint8_t j = 0; j < 8; j++)
-    {
-      if (crc & 0x8000)
-        crc = (crc << 1) ^ 0x1021;
-      else
-        crc <<= 1;
-    }
-  }
+  if (invert)
+    v = -v;
 
-  return crc;
+  return v;
 }
 
 // =================================================
-// ================= WATCHDOG =====================
+// WATCHDOG
 // =================================================
 void Storm32Controller::updateWDT(uint32_t now)
 {
@@ -288,17 +311,17 @@ void Storm32Controller::updateWDT(uint32_t now)
   {
     case Storm32State::OK:
       if (dt > cfg.ackTimeout1)
-        enterState(Storm32State::DEGRADED);
+        state = Storm32State::DEGRADED;
       break;
 
     case Storm32State::DEGRADED:
       if (dt > cfg.ackTimeout2)
-        enterState(Storm32State::LOST);
+        state = Storm32State::LOST;
       break;
 
     case Storm32State::LOST:
       if (dt > cfg.ackTimeout3)
-        enterState(Storm32State::EMERGENCY);
+        state = Storm32State::EMERGENCY;
       break;
 
     default:
@@ -306,25 +329,17 @@ void Storm32Controller::updateWDT(uint32_t now)
   }
 }
 
-void Storm32Controller::enterState(Storm32State newState)
-{
-  if (state == Storm32State::EMERGENCY)
-    return;
-
-  state = newState;
-
-  if (state == Storm32State::EMERGENCY)
-    sendDriveOff();
-}
-
 // =================================================
-// ================= SEND =========================
+// SEND CONTROL
 // =================================================
 void Storm32Controller::sendBinaryControl(int16_t pitch,
-                                           int16_t yaw)
+                                          int16_t yaw)
 {
-  int16_t maxP = (int16_t)(cfg.pitchLimitDeg * 100);
-  int16_t maxY = (int16_t)(cfg.yawLimitDeg * 100);
+  int16_t maxP =
+    (int16_t)(cfg.pitchLimitDeg * 100.0f);
+
+  int16_t maxY =
+    (int16_t)(cfg.yawLimitDeg * 100.0f);
 
   pitch = constrain(pitch, -maxP, maxP);
   yaw   = constrain(yaw,   -maxY, maxY);
@@ -349,13 +364,75 @@ void Storm32Controller::sendBinaryControl(int16_t pitch,
   stormSerial.write(pkt, 9);
 }
 
+// =================================================
+// DRIVE OFF
+// =================================================
 void Storm32Controller::sendDriveOff()
 {
   sendBinaryControl(0, 0);
 }
 
 // =================================================
-// ================= EEPROM =======================
+// PARSER (SAFE STUB)
+// =================================================
+void Storm32Controller::parseByte(uint8_t b,
+                                  uint32_t now)
+{
+  // มี byte กลับมา ถือว่าสื่อสารได้ระดับหนึ่ง
+  lastAckMs = now;
+
+  if (state == Storm32State::DEGRADED ||
+      state == Storm32State::LOST)
+  {
+    state = Storm32State::OK;
+  }
+
+  if (!frameActive)
+  {
+    if (b == STORM32_START_BYTE)
+    {
+      frameActive = true;
+      frameIndex = 0;
+      frameBuf[frameIndex++] = b;
+    }
+    return;
+  }
+
+  frameBuf[frameIndex++] = b;
+
+  if (frameIndex >= STORM32_MAX_FRAME)
+  {
+    frameActive = false;
+    frameIndex = 0;
+  }
+}
+
+// =================================================
+// CRC16
+// =================================================
+uint16_t Storm32Controller::crc16_ccitt(const uint8_t* data,
+                                        uint8_t len)
+{
+  uint16_t crc = 0xFFFF;
+
+  for (uint8_t i = 0; i < len; i++)
+  {
+    crc ^= (uint16_t)data[i] << 8;
+
+    for (uint8_t j = 0; j < 8; j++)
+    {
+      if (crc & 0x8000)
+        crc = (crc << 1) ^ 0x1021;
+      else
+        crc <<= 1;
+    }
+  }
+
+  return crc;
+}
+
+// =================================================
+// EEPROM
 // =================================================
 void Storm32Controller::loadConfig()
 {
@@ -377,12 +454,12 @@ void Storm32Controller::saveConfig()
 void Storm32Controller::setDefaultConfig()
 {
   cfg.invertPitch = false;
-  cfg.invertYaw = false;
+  cfg.invertYaw   = false;
 
   cfg.pitchLimitDeg = 30.0f;
-  cfg.yawLimitDeg = 45.0f;
+  cfg.yawLimitDeg   = 45.0f;
 
-  cfg.slewNormal = 60.0f;
+  cfg.slewNormal   = 60.0f;
   cfg.slewDegraded = 20.0f;
 
   cfg.ackTimeout1 = 400;
@@ -393,7 +470,7 @@ void Storm32Controller::setDefaultConfig()
 }
 
 // =================================================
-// ================= STATUS =======================
+// STATUS
 // =================================================
 Storm32State Storm32Controller::getState() const
 {
@@ -407,49 +484,4 @@ bool Storm32Controller::isLocked() const
          state == Storm32State::INIT ||
          state == Storm32State::EMERGENCY;
 }
-
-// =================================================
-// RC MAP
-// =================================================
-float Storm32Controller::mapRCtoDeg(uint16_t rc,
-                                    float limit,
-                                    bool invert)
-{
-  rc = constrain(rc, 1000, 2000);
-
-  float v = (rc - 1500) / 500.0f * limit;
-
-  if (invert)
-    v = -v;
-
-  return v;
-}
-
-// =================================================
-// SERIAL PARSER (STUB SAFE VERSION)
-// =================================================
-void Storm32Controller::parseByte(uint8_t b,
-                                  uint32_t now)
-{
-  if (!frameActive)
-  {
-    if (b == STORM32_START_BYTE)
-    {
-      frameActive = true;
-      frameIndex = 0;
-      frameBuf[frameIndex++] = b;
-    }
-    return;
-  }
-
-  frameBuf[frameIndex++] = b;
-
-  if (frameIndex >= STORM32_MAX_FRAME)
-  {
-    frameActive = false;
-    frameIndex = 0;
-  }
-}
-
-
 
