@@ -6,7 +6,7 @@
 // =================================================
 Storm32Controller& getGimbal()
 {
-  static Storm32Controller gimbal(Serial2, ibus);
+  static Storm32Controller gimbal(Serial3, ibus);
   return gimbal;
 }
 
